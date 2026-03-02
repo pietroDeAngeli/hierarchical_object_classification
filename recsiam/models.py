@@ -141,8 +141,8 @@ class MultiRunningMean(torch.nn.Module):
         self.running_means = [RunningMean(w, s) for w, s in zip(self.window_sizes, self.strides)]
 
     def forward(self, data):
-        ret_l = np.array([r_m.forward(data) for r_m in self.running_means], dtype=object).T.tolist()
-        return [torch.cat(r) for r in ret_l]
+        results = [r_m.forward(data) for r_m in self.running_means]
+        return [torch.cat(list(r)) for r in zip(*results)]
 
 
 class RecursiveReduction(torch.nn.Module):

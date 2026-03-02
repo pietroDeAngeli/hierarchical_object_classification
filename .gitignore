@@ -4,6 +4,13 @@ __pycache__/
 
 #dataset
 experiments/frontiers/dataset/*
+inputs/*
+outputs/*
+dataset/*
+results/*
+embedded.zip
+*.sbatch
+*.log
 
 
 # swap files

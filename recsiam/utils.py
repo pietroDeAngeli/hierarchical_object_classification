@@ -231,7 +231,7 @@ def rec_tree_from_lists(lists, G, parent, permissive):
 def shuffle_tree_by_distance(rng, hierarchy, classes, prob):
     prob = np.asarray(prob)
     assert prob.sum() == 1.
-    taken = np.zeros(len(classes), dtype=np.bool)
+    taken = np.zeros(len(classes), dtype=np.bool_)
     pref = "inst_"
     tree = tree_with_instances(hierarchy, classes, pref)
 
@@ -356,6 +356,6 @@ def _arrayinset(a, s, r):
 
 
 def arrayinset(a, s):
-    r = np.empty(len(a), dtype=np.bool)
+    r = np.empty(len(a), dtype=np.bool_)
     _arrayinset(a, s, r)
     return r

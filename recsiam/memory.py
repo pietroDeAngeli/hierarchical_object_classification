@@ -219,7 +219,7 @@ class ObjectsMemory(object):
 
         childs = list(self.T.succ[node])
         labels = np.empty(self.elem_ids.size, dtype=object)
-        data_mask = np.zeros(self.elem_ids.size, dtype=np.bool)
+        data_mask = np.zeros(self.elem_ids.size, dtype=np.bool_)
 
         for c in childs:
             c_elems = self.T.nodes[c]["elem"] | self.T.nodes[c]["uelem"]
@@ -274,7 +274,7 @@ class ObjectsMemory(object):
             node = utils.get_root(self.T)
             node = np.tile(node, len(data)) if data.ndim == 2 else node
             prob = np.ones((len(data), 1)) if data.ndim == 2 else 1.0
-            ind = np.zeros(len(data), dtype=np.int) if data.ndim == 2 else 0
+            ind = np.zeros(len(data), dtype=int) if data.ndim == 2 else 0
 
             return node, ind, prob
 
@@ -438,7 +438,7 @@ def binary_entropy(p):
 
 def _compute_subtract_entropy_thresholds(gt, dgt, w_sz):
 
-    gt = gt.astype(np.bool)
+    gt = gt.astype(np.bool_)
     c_win = np.ones(w_sz)
 
     ara = np.arange(1, gt.size + 1, dtype=np.float64)

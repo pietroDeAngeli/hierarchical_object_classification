@@ -1,3 +1,42 @@
+"""
+This module defines the `Agent` and `ActiveAgent` classes, as well as several utility functions and templates for creating agents. 
+These agents are designed to interact with a memory structure, make predictions, and request supervision when necessary.
+Classes:
+---------
+- Agent:
+    Represents a basic agent that interacts with object memory and supervision memory, 
+    makes predictions, and processes data.
+- ActiveAgent:
+    Inherits from `Agent` and introduces active learning capabilities by using thresholds 
+    to decide when to request supervision.
+Functions:
+----------
+- online_agent_template(model_factory, seed, supervisor, memory_factory, bootstrap, **kwargs):
+    Creates an instance of the `Agent` class with the provided parameters.
+- active_agent_template(model_factory, seed, supervisor, memory_factory, sup_effort, bootstrap, **kwargs):
+    Creates an instance of the `ActiveAgent` class with the provided parameters.
+- online_agent_factory(model_factory, **kwargs):
+    Returns a partial function for creating `Agent` instances.
+- active_agent_factory(model_factory, **kwargs):
+    Returns a partial function for creating `ActiveAgent` instances. Requires `sup_effort` in kwargs.
+- _t(shape):
+    Utility function that returns a numpy array of ones with the specified shape and boolean dtype.
+- _f(shape):
+    Utility function that returns a numpy array of zeros with the specified shape and boolean dtype.
+- online_decide(distance, sup_mem):
+    Determines whether to request supervision based on the distance and supervision memory using a linear threshold.
+- active_decide_by_entropy(distance, sup_mem, fraction):
+    Determines whether to request supervision based on entropy thresholds and a fraction of the supervision memory.
+- active_decide_by_consensus(distance, sup_mem, fraction):
+    Determines whether to request supervision based on consensus thresholds and a fraction of the supervision memory.
+Attributes:
+-----------
+- _T:
+    A constant numpy array of shape (1,) with boolean dtype and value True.
+- _F:
+    A constant numpy array of shape (1,) with boolean dtype and value False.
+"""
+
 from __future__ import division
 
 import torch
@@ -49,14 +88,14 @@ def active_agent_factory(model_factory, **kwargs):
 
 
 def _t(shape):
-    return np.ones(shape, dtype=np.bool)
+    return np.ones(shape, dtype=np.bool_)
 
 
 _T = _t(1)
 
 
 def _f(shape):
-    return np.zeros(shape, dtype=np.bool)
+    return np.zeros(shape, dtype=np.bool_)
 
 
 _F = _f(1)
@@ -217,7 +256,7 @@ def active_decide_by_consensus(distance, sup_mem, fraction):
 
     thr = mem.compute_linear_threshold(sup_mem.labels, sup_mem.distances)
 
-    c_p = (sup_mem.distances < thr) == sup_mem.labels.astype(np.bool)
+    c_p = (sup_mem.distances < thr) == sup_mem.labels.astype(np.bool_)
 
     l_thr, u_thr = mem.old_compute_window_threshold(c_p, sup_mem.distances, fraction)
 

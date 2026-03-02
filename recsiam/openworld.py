@@ -138,7 +138,7 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}]):
         # validate / test
         if do_eval:
             e = np.array([agent.predict(elem)[0]
-                          for elem in ev_data]).astype(np.int)
+                          for elem in ev_data]).astype(int)
             eval_pred.append(e)
 
     s_d = {"pred": np.squeeze(session_pred),
@@ -166,7 +166,10 @@ def stack_results(res_l):
     stacked = {}
     for key in res_l[0]:
         if len(res_l) > 1:
-            stacked[key] = np.array([r[key] for r in res_l])
+            try:
+                stacked[key] = np.array([r[key] for r in res_l])
+            except ValueError:
+                stacked[key] = np.array([r[key] for r in res_l], dtype=object)
         else:
             stacked[key] = res_l[0][key][None, ...]
 

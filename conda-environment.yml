@@ -1,99 +1,202 @@
-name: torch
+# language: yaml
+# filepath: conda-environment.yml
+name: hol
 channels:
   - pytorch
+  - nvidia
+  - conda-forge
   - defaults
-dependencies:
-  - blas=1.0=mkl
-  - ca-certificates=2020.6.24=0
-  - certifi=2020.6.20=py37_0
-  - cffi=1.12.2=py37h2e261b9_1
-  - cudatoolkit=10.1.243=h6bb024c_0
-  - freetype=2.9.1=h8a8886c_1
-  - intel-openmp=2019.3=199
-  - jpeg=9b=h024ee3a_2
-  - libedit=3.1.20181209=hc058e9b_0
-  - libffi=3.2.1=hd88cf55_4
-  - libgcc-ng=8.2.0=hdf63c60_1
-  - libgfortran-ng=7.3.0=hdf63c60_0
-  - libpng=1.6.36=hbc83047_0
-  - libstdcxx-ng=8.2.0=hdf63c60_1
-  - libtiff=4.0.10=h2733197_2
-  - mkl=2019.3=199
-  - mkl_fft=1.0.10=py37ha843d7b_0
-  - mkl_random=1.0.2=py37hd81dba3_0
-  - ncurses=6.1=he6710b0_1
-  - ninja=1.9.0=py37hfd86e86_0
-  - numba=0.49.1=py37h0573a6f_0
-  - numpy=1.16.2=py37h7e9f1db_0
-  - numpy-base=1.16.2=py37hde5b4d6_0
-  - olefile=0.46=py37_0
-  - openssl=1.1.1g=h7b6447c_0
-  - pillow=5.4.1=py37h34e0f95_0
-  - pip=19.0.3=py37_0
-  - pycparser=2.19=py37_0
-  - python=3.7.2=h0371630_0
-  - pytorch=1.4.0=py3.7_cuda10.1.243_cudnn7.6.3_0
-  - readline=7.0=h7b6447c_5
-  - setuptools=40.8.0=py37_0
-  - six=1.12.0=py37_0
-  - sqlite=3.27.2=h7b6447c_0
-  - tbb=2020.0=hfd86e86_0
-  - tk=8.6.8=hbc83047_0
-  - torchvision=0.5.0=py37_cu101
-  - wheel=0.33.1=py37_0
-  - xz=5.2.4=h14c3975_4
-  - zlib=1.2.11=h7b6447c_3
-  - zstd=1.3.7=h0b5b093_0
-  - pip:
-    - backcall==0.1.0
-    - cycler==0.10.0
-    - cython==0.29.16
-    - decorator==4.4.0
-    - entrypoints==0.3
-    - flake8==3.7.9
-    - imageio==2.5.0
-    - ipdb==0.13.2
-    - ipdbplugin==1.5.0
-    - ipython==7.4.0
-    - ipython-genutils==0.2.0
-    - jedi==0.13.3
-    - joblib==0.13.2
-    - kiwisolver==1.1.0
-    - libmr==0.1.9
-    - llvmlite==0.32.1
-    - lz4==3.1.0
-    - matplotlib==3.1.0
-    - mccabe==0.6.1
-    - networkx==2.3
-    - nose==1.3.7
-    - pandas==1.1.2
-    - parso==0.3.4
-    - pexpect==4.6.0
-    - pickleshare==0.7.5
-    - plotly==4.10.0
-    - prompt-toolkit==2.0.9
-    - ptyprocess==0.6.0
-    - py-spy==0.3.3
-    - pycodestyle==2.5.0
-    - pyflakes==2.1.1
-    - pygments==2.3.1
-    - pyinstrument==3.1.3
-    - pyinstrument-cext==0.2.2
-    - pyparsing==2.4.0
-    - python-dateutil==2.8.0
-    - pytorch-ignite==0.2.0
-    - pytz==2020.1
-    - pywavelets==1.0.3
-    - retrying==1.3.3
-    - scikit-image==0.15.0
-    - scikit-learn==0.21.2
-    - scikit-video==1.1.11
-    - scipy==1.3.0
-    - snakeviz==2.1.0
-    - tabulate==0.8.7
-    - tornado==6.0.4
-    - tqdm==4.47.0
-    - traitlets==4.3.2
-    - wcwidth==0.1.7
-prefix: /home/luca/miniconda3/envs/torch
 
+dependencies:
+  - python=3.10.19
+  # PyTorch + CUDA
+  - pytorch=2.2.0
+  - torchvision=0.15.2
+  - pytorch-cuda=11.8
+  - pytorch-mutex=1.0
+  - cuda-cccl=13.1.115
+  - cuda-cudart=11.8.89
+  - cuda-cudart-dev=11.8.89
+  - cuda-cupti=11.8.87
+  - cuda-libraries=11.8.0
+  - cuda-libraries-dev=11.8.0
+  - cuda-nvrtc=11.8.89
+  - cuda-nvrtc-dev=11.8.89
+  - cuda-nvtx=11.8.86
+  - cuda-profiler-api=13.1.115
+  - cuda-runtime=11.8.0
+  - cuda-version=13.1
+  - libcublas=11.11.3.6
+  - libcublas-dev=11.11.3.6
+  - libcufft=10.9.0.58
+  - libcufft-dev=10.9.0.58
+  - libcurand=10.4.1.81
+  - libcurand-dev=10.4.1.81
+  - libcusolver=11.4.1.48
+  - libcusolver-dev=11.4.1.48
+  - libcusparse=11.7.5.86
+  - libcusparse-dev=11.7.5.86
+  - libnpp=11.8.0.86
+  - libnpp-dev=11.8.0.86
+  - libnvjpeg=11.9.0.86
+  - libnvjpeg-dev=11.9.0.86
+
+  # Scientifico / ML
+  - numpy=1.26.4
+  - scipy=1.15.2
+  - scikit-learn=1.7.2
+  - scikit-image=0.25.2
+  - pandas=2.3.3
+  - matplotlib=3.10.8
+  - matplotlib-base=3.10.8
+  - networkx=3.4.2
+  - sympy=1.14.0
+
+  # Algebra lineare
+  - blas=2.305
+  - blas-devel=3.11.0
+  - libblas=3.11.0
+  - libcblas=3.11.0
+  - liblapack=3.11.0
+  - liblapacke=3.11.0
+  - mkl=2025.3.0
+  - mkl-devel=2025.3.0
+  - mkl-include=2025.3.0
+  - llvm-openmp=21.1.8
+  - tbb=2022.3.0
+
+  # Utilità
+  - joblib=1.5.3
+  - tqdm=4.67.3
+  - tabulate=0.9.0
+  - lz4=4.4.5
+  - lz4-c=1.10.0
+  - pyyaml=6.0.3
+  - colorama=0.4.6
+  - six=1.17.0
+  - packaging=26.0
+  - setuptools=82.0.0
+  - pip=26.0.1
+  - wheel=0.46.3
+
+  # Immagini
+  - pillow=12.1.1
+  - libjpeg-turbo=3.1.2
+  - libtiff=4.7.1
+  - libpng=1.6.55
+  - libwebp-base=1.6.0
+  - openjpeg=2.5.4
+  - lcms2=2.18
+  - lerc=4.0.0
+  - libdeflate=1.25
+  - tifffile=2025.2.18
+  - pywavelets=1.8.0
+  - lazy-loader=0.4
+
+  # Compressione
+  - brotli=1.2.0
+  - brotli-bin=1.2.0
+  - brotli-python=1.2.0
+  - libbrotlicommon=1.2.0
+  - libbrotlidec=1.2.0
+  - libbrotlienc=1.2.0
+  - bzip2=1.0.8
+  - zstd=1.5.7
+  - zlib-ng=2.3.3
+  - libzlib=1.3.1
+  - liblzma=5.8.2
+  - backports.zstd=1.3.0
+
+  # Rete / HTTP
+  - requests=2.32.5
+  - urllib3=2.6.3
+  - certifi=2026.2.25
+  - charset-normalizer=3.4.4
+  - idna=3.11
+  - pysocks=1.7.1
+  - openssl=3.6.1
+  - ca-certificates=2026.2.25
+
+  # Qt / GUI
+  - pyside6=6.10.2
+  - qt6-main=6.10.2
+  - libvulkan-loader=1.4.341.0
+
+  # Font / Testo
+  - fontconfig=2.17.1
+  - fonttools=4.61.1
+  - freetype=2.14.1
+  - libfreetype=2.14.1
+  - libfreetype6=2.14.1
+  - fonts-conda-ecosystem=1
+  - fonts-conda-forge=1
+  - font-ttf-dejavu-sans-mono=2.37
+  - font-ttf-inconsolata=3.000
+  - font-ttf-source-code-pro=2.038
+  - font-ttf-ubuntu=0.83
+  - graphite2=1.3.14
+  - harfbuzz=12.3.2
+  - cairo=1.18.4
+  - pixman=0.46.4
+  - icu=78.2
+
+  # Parsing / Template
+  - jinja2=3.1.6
+  - markupsafe=3.0.3
+  - pyparsing=3.3.2
+  - libxml2=2.15.1
+  - libxml2-16=2.15.1
+  - libxslt=1.1.43
+  - pcre2=10.47
+
+  # Varie / Runtime
+  - contourpy=1.3.2
+  - cycler=0.12.1
+  - double-conversion=3.4.0
+  - filelock=3.24.3
+  - h2=4.3.0
+  - hpack=4.1.0
+  - hyperframe=6.1.0
+  - importlib-metadata=8.7.0
+  - kiwisolver=1.4.9
+  - mpmath=1.4.0
+  - munkres=1.1.4
+  - python-dateutil=2.9.0.post0
+  - python-tzdata=2025.3
+  - python_abi=3.10
+  - pytz=2025.2
+  - qhull=2020.2
+  - threadpoolctl=3.6.0
+  - tornado=6.5.4
+  - typing_extensions=4.15.0
+  - tzdata=2025c
+  - unicodedata2=17.0.1
+  - zipp=3.23.0
+
+  # Librerie di sistema
+  - _openmp_mutex=4.5
+  - krb5=1.22.2
+  - libexpat=2.7.4
+  - libffi=3.5.2
+  - libgcc=15.2.0
+  - libglib=2.86.4
+  - libgomp=15.2.0
+  - libhwloc=2.12.2
+  - libiconv=1.18
+  - libsqlite=3.51.2
+  - libuv=1.51.0
+  - libxcb=1.17.0
+  - pthread-stubs=0.4
+  - tk=8.6.13
+  - xorg-libxau=1.0.12
+  - xorg-libxdmcp=1.1.5
+  - yaml=0.2.5
+
+  - pip:
+    - plotly==6.5.2
+    - imageio==2.37.2
+    - torchaudio==2.2.0
+    - narwhals==2.17.0
+    # libmr generalmente va installato manualmente (vedi README)
+    # - Cyton
+    # - libmr

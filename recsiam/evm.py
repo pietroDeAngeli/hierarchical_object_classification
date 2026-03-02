@@ -249,7 +249,7 @@ class EVM():
         new_s = slice(old_s.stop, old_s.stop + len(new_X), None)
         neg_s = slice(new_s.stop, new_s.stop + len(neg_X), None)
 
-        new_d_mat = np.empty((new_s.stop, neg_s.stop), dtype=np.float)
+        new_d_mat = np.empty((new_s.stop, neg_s.stop), dtype=float)
         new_d_mat[old_s, old_s] = d_old
         new_d_mat[new_s, new_s] = d_new
         new_d_mat[old_s, new_s] = d_old_new
@@ -297,7 +297,7 @@ class EVM():
                               indices=slice(len(self.X) - len(X),
                                             len(self.X), None))
         else:
-            self.covered_points = np.ones(len(self.y), dtype=np.int)
+            self.covered_points = np.ones(len(self.y), dtype=int)
 
         assert set(self.labels) == set(self.y)
 
@@ -310,7 +310,7 @@ class EVM():
         """
         if self.cover_threshold >= 1.0:
             # optimize for the trivial case
-            self.covered_points = np.ones(len(self.y), dtype=np.int)
+            self.covered_points = np.ones(len(self.y), dtype=int)
             return
         if indices is None:
             indices = slice(None, None, None)
