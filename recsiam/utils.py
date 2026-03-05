@@ -28,8 +28,9 @@ class ImageNormalizer(torch.nn.Module):
         return (zero_to_one - self.mean) / self.std
 
 
-def default_image_normalizer():
-    return ImageNormalizer([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+# I don't need this for now since I'm using DINO
+#def default_image_normalizer():
+#    return ImageNormalizer([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
 
 def t2a(tensor):
@@ -247,7 +248,10 @@ def shuffle_tree_by_distance(rng, hierarchy, classes, prob):
             up = rng.choice(curr_prob.size, p=curr_prob)
             anchor = last
             for _ in range(up):
-                anchor = parent(tree, anchor)
+                preds = list(tree.pred[anchor])
+                if not preds:
+                    break  # already at root, cannot go further up
+                anchor = preds[0]
 
             candidates = sorted(itertools.chain.from_iterable((tree.succ[n] for n in tree.nodes[anchor]["elem"])))
             if len(candidates) == 0:

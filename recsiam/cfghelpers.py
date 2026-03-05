@@ -13,7 +13,7 @@ import recsiam.embeddings as emb
 import recsiam.memory as mem
 import recsiam.openworld as ow
 import recsiam.utils as utils
-import recsiam.models as models
+#import recsiam.models as models
 
 from functools import partial
 
@@ -43,12 +43,12 @@ _EXP_DICT = {
                 "obj_mem_args": {},
                  },
         "model": {
-                "embedding": "squeezenet1_1",
-                "emb_train": False,
-                "pretrained": True,
-                "aggregator": "mean",
-                "ag_args": {},
-                "pre_embed": True
+                "embedding": "dinov3",
+                #"emb_train": False,
+                #"pretrained": True,
+                #"aggregator": "mean",
+                #"ag_args": {},
+                #"pre_embed": True
                 }
 }
 
@@ -86,48 +86,19 @@ def is_dynamic(params):
 
 def prep_model(params):
 
-    if not is_dynamic(params):
-        sseq  = torch.nn.Sequential
-    else:
-        sseq = models.KwargsSequential
-
     def instance_model():
-        module_list = []
 
-        if not params["dataset"]["pre_embedded"]:
+        if params["dataset"]["pre_embedded"]:
+            # se usi embedding già salvati
+            return torch.nn.Identity()
 
-            emb_model = emb.get_embedding(params["model"]["embedding"])
+        # embedding = stringa tipo "dinov3"
+        emb_name = params["model"]["embedding"]
 
-            seq_module_list = [utils.default_image_normalizer(),
-                               emb_model(pretrained=params["model"]["pretrained"]),
-                               models.BatchFlattener()]
-            emb_m = models.SequenceSequential(*seq_module_list)
-            if is_dynamic(params):
-                emb_m =  models.ParamForward(emb_m)
-
-        else:
-            emb_m = sseq()
-        module_list.append(("embed", emb_m))
-
-        p_aggr = utils.as_list(params["model"]["aggregator"])
-        p_ag_args = utils.as_list(params["model"]["ag_args"])
-        p_is_dyn = utils.as_list(params["model"]["ag_dynamic"])
-        assert len(p_aggr) == len(p_ag_args) and len(p_aggr) == len(p_is_dyn)
-        if p_aggr[0] is not None:
-            if len(p_aggr) > 1:
-                aggr = [models.get_aggregator(a)(**p) for a, p in zip(p_aggr, p_ag_args)]
-                if is_dynamic(params):
-                    aggr = [m if d else models.ParamForward(m) for d, m in zip(p_is_dyn, aggr)]
-                aggr = sseq(*aggr)
-
-            else:
-                aggr = models.get_aggregator(p_aggr[0])(**p_ag_args[0])
-                if is_dynamic(params) and not p_is_dyn[0]:
-                    aggr = models.ParamForward(aggr)
-
-            module_list.append(("aggr", aggr))
-
-        model = sseq(OrderedDict(module_list))
+        emb_model_factory = emb.get_embedding(emb_name)
+        model = emb_model_factory(
+            pretrained=params["model"].get("pretrained", True)
+        )
 
         return model
 

@@ -129,7 +129,8 @@ class Agent(object):
     def process_next(self, data, s_id):
         self.cnt += 1
 
-        embed = self.forward(data)[0].numpy()
+        # Keep embed 2D (1, D) so ObjectsMemory.add_element tiles correctly
+        embed = self.forward(data).cpu().numpy()
 
         if len(self.obj_mem) == 0:
             self.obj_mem.add_element(s_id, embed, utils.get_root(self.obj_mem.T),

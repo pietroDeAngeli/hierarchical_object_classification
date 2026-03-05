@@ -2,6 +2,7 @@ import argparse
 import logging
 import json
 import tempfile
+import pickle
 import torch
 import numpy as np
 from pathlib import Path
@@ -35,7 +36,8 @@ def main(cmdline):
     with lz4.frame.open(outfile_path,
                         mode="wb",
                         compression_level=lz4.frame.COMPRESSIONLEVEL_MINHC) as f:
-        np.save(f, (results, params))
+        pickle.dump((results, params), f)
+
 
 
 if __name__ == '__main__':

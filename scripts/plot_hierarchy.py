@@ -5,6 +5,7 @@ from pathlib import Path
 from tabulate import tabulate
 import lz4.frame
 import networkx as nx
+import pickle
 
 import recsiam.utils as utils
 
@@ -18,9 +19,10 @@ _STYLES = [c+"-" for c in _COLORS]
 def smart_load(path):
     if path.endswith(".lz4"):
         with lz4.frame.open(str(path), mode="rb") as f:
-            loaded = np.load(f, allow_pickle=True)
+            loaded = pickle.load(f)
     else:
-        loaded = np.load(path, allow_pickle=True)
+        with open(path, "rb") as f:
+            loaded = pickle.load(f)
 
     return loaded[0]
 

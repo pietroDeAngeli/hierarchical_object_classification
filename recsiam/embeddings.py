@@ -1,149 +1,88 @@
+import os
 import torch
+import torch.nn as nn
+import torchvision.transforms as T
+from transformers import AutoModel
+from dotenv import load_dotenv
 
-from functools import partial
-from pathlib import Path
+load_dotenv()
+_HF_TOKEN = os.getenv("HF_TOKEN")
+
+# Public DINOv2-small model (non-gated, matches embedding_preprocess.py)
+_DEFAULT_MODEL = "facebook/dinov2-small"
 
 
-import torchvision.models  as models
-import torch.nn.functional as F
+class DINOEmbedding(nn.Module):
+    """
+    DINO feature extractor wrapper.
+    Returns CLS embedding of shape (B, D).
+    """
 
-from . import deepercluster as dc
+    _shared_model = None  # shared per-process instance
 
+    def __init__(
+        self,
+        model_name=_DEFAULT_MODEL,
+        pretrained=True,
+        freeze=True,
+    ):
+        super().__init__()
 
-class ResNetEmbedding(torch.nn.Module):
+        if DINOEmbedding._shared_model is None:
+            DINOEmbedding._shared_model = AutoModel.from_pretrained(
+                model_name, token=_HF_TOKEN
+            )
 
-    def __init__(self, base_resnet):
-        super(ResNetEmbedding, self).__init__()
+        self.model = DINOEmbedding._shared_model
 
-        self.base_resnet = base_resnet
+        if freeze:
+            for p in self.model.parameters():
+                p.requires_grad = False
+
+        self.model.eval()
+
+        # ImageNet normalization (DINO uses this)
+        self.normalize = T.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        )
 
     def forward(self, x):
-        x = self.base_resnet.conv1(x)
-        x = self.base_resnet.bn1(x)
-        x = self.base_resnet.relu(x)
-        x = self.base_resnet.maxpool(x)
+        """
+        x: torch.Tensor (B, 3, H, W) in [0,1]
+        Images are resized to 224x224 to guarantee a fixed number of patches.
+        """
 
-        x = self.base_resnet.layer1(x)
-        x = self.base_resnet.layer2(x)
-        x = self.base_resnet.layer3(x)
-        x = self.base_resnet.layer4(x)
+        if x.ndim != 4:
+            raise ValueError("Input must be (B, C, H, W)")
 
-        x = self.base_resnet.avgpool(x)
+        # Resize to the patch size expected by DINO (224x224)
+        if x.shape[-2:] != (224, 224):
+            x = torch.nn.functional.interpolate(
+                x, size=(224, 224), mode="bilinear", align_corners=False
+            )
 
-        return x
+        x = self.normalize(x)
 
-class InceptionEmbedding(torch.nn.Module):
+        outputs = self.model(pixel_values=x)
 
-    def __init__(self, base_network):
-        super(InceptionEmbedding, self).__init__()
+        # CLS token
+        embedding = outputs.last_hidden_state[:, 0]
 
-        self.base_network = base_network
-
-    def forward(self, x):
-        if self.base_network.transform_input:
-            x = x.clone()
-            x[:, 0] = x[:, 0] * (0.229 / 0.5) + (0.485 - 0.5) / 0.5
-            x[:, 1] = x[:, 1] * (0.224 / 0.5) + (0.456 - 0.5) / 0.5
-            x[:, 2] = x[:, 2] * (0.225 / 0.5) + (0.406 - 0.5) / 0.5
-        # 299 x 299 x 3
-        x = self.base_network.Conv2d_1a_3x3(x)
-        # 149 x 149 x 32
-        x = self.base_network.Conv2d_2a_3x3(x)
-        # 147 x 147 x 32
-        x = self.base_network.Conv2d_2b_3x3(x)
-        # 147 x 147 x 64
-        x = F.max_pool2d(x, kernel_size=3, stride=2)
-        # 73 x 73 x 64
-        x = self.base_network.Conv2d_3b_1x1(x)
-        # 73 x 73 x 80
-        x = self.base_network.Conv2d_4a_3x3(x)
-        # 71 x 71 x 192
-        x = F.max_pool2d(x, kernel_size=3, stride=2)
-        # 35 x 35 x 192
-        x = self.base_network.Mixed_5b(x)
-        # 35 x 35 x 256
-        x = self.base_network.Mixed_5c(x)
-        # 35 x 35 x 288
-        x = self.base_network.Mixed_5d(x)
-        # 35 x 35 x 288
-        x = self.base_network.Mixed_6a(x)
-        # 17 x 17 x 768
-        x = self.base_network.Mixed_6b(x)
-        # 17 x 17 x 768
-        x = self.base_network.Mixed_6c(x)
-        # 17 x 17 x 768
-        x = self.base_network.Mixed_6d(x)
-        # 17 x 17 x 768
-        x = self.base_network.Mixed_6e(x)
-        # 17 x 17 x 768
-        if self.base_network.training and self.base_network.aux_logits:
-            aux = self.base_network.AuxLogits(x)
-        # 17 x 17 x 768
-        x = self.base_network.Mixed_7a(x)
-        # 8 x 8 x 1280
-        x = self.base_network.Mixed_7b(x)
-        # 8 x 8 x 2048
-        x = self.base_network.Mixed_7c(x)
-        # 8 x 8 x 2048
-        x = F.avg_pool2d(x, kernel_size=x.shape[-1])
-        # 1 x 1 x 2048
-        x = F.dropout(x, training=self.base_network.training)
-
-def squeezenet1_1embedding(*args, **kwargs):
-    return models.squeezenet1_1(*args, **kwargs).features
-
-
-def resnet50embedding(*args, **kwargs):
-    return ResNetEmbedding(models.resnet50(*args, **kwargs))
-
-def resnet101embedding(*args, **kwargs):
-    return ResNetEmbedding(models.resnet101(*args, **kwargs))
-
-
-def resnet152embedding(*args, **kwargs):
-    return ResNetEmbedding(models.resnet152(*args, **kwargs))
-
-def inceptionv3embedding(*args, **kwargs):
-    return InceptionEmbedding(models.inception_v3(*args, **kwargs))
-
-def vggembedding(vgg_type, *args, **kwargs):
-    vgg = vgg_type(*args, **kwargs)
-
-    return vgg.features
-
-def deepercl(pretrained=False):
-    model = dc.model_factory.model_factory(True)
-    if pretrained:
-        dc.pretrain.load_pretrained(model)
-
-    return model
+        return embedding
 
 
 def no_embedding(*args, **kwargs):
-    return torch.nn.Sequential()
+    return nn.Identity()
 
 
-def get_embedding(string):
-    if string not in _EMBEDDINGS.keys():
-        e_str = "Valid embeddings: {}".format(list(_EMBEDDINGS.keys()))
-        raise ValueError(e_str)
-    return _EMBEDDINGS[string]
+_EMBEDDINGS = {
+    "dinov3": DINOEmbedding,
+    "none": no_embedding,
+}
 
 
-_EMBEDDINGS = { "squeezenet1_1": squeezenet1_1embedding,
-               "resnet50" : resnet50embedding,
-               "resnet101" : resnet101embedding,
-               "resnet152" : resnet152embedding,
-               "inceptionv3" : inceptionv3embedding,  
-                "vgg11" : partial(vggembedding, models.vgg11),
-                "vgg11_bn" : partial(vggembedding, models.vgg11_bn),
-                "vgg13" : partial(vggembedding, models.vgg13),
-                "vgg13_bn" : partial(vggembedding, models.vgg13_bn),
-                "vgg16" : partial(vggembedding, models.vgg16),
-                "vgg16_bn" : partial(vggembedding, models.vgg16_bn),
-                "vgg19" : partial(vggembedding, models.vgg19),
-                "vgg19_bn" : partial(vggembedding, models.vgg19_bn),
-                "none" : no_embedding,
-                "deepercluster" : deepercl
-               }
-
+def get_embedding(name):
+    if name not in _EMBEDDINGS:
+        raise ValueError(f"Valid embeddings: {list(_EMBEDDINGS.keys())}")
+    return _EMBEDDINGS[name]
