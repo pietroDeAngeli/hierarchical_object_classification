@@ -141,3 +141,4 @@ else
 fi
 
 mv metadata.json dataset/
+find dataset -name "*.jpg" -type f -delete
