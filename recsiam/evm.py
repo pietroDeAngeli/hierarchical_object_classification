@@ -92,7 +92,10 @@ def _weibull_fit(args):
     if nearest.size == 1:
         nearest = np.array([nearest[0], nearest[0] + 1e-4])
         tailsize = 2
-    assert not np.all(nearest == nearest[0])
+    #assert not np.all(nearest == nearest[0])
+    if np.all(nearest == nearest[0]):
+        nearest[-1] += 1e-4
+        
     mr.fit_low(nearest, tailsize)
 
     ret = str(mr)
@@ -165,8 +168,6 @@ def fuse_prob_for_label(prob_mat, num_to_fuse):
     Averages probability of a certain class over the num_to_fuse most
     likely extreme vectors of that class
     """
-    if prob_mat.shape[0] == 0:
-        return np.zeros(prob_mat.shape[1])
     if prob_mat.shape[0] <= num_to_fuse:
         return  np.average(prob_mat, axis=0)
     else:
