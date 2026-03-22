@@ -204,3 +204,5 @@ dependencies:
     # - pytorch-ignite
     # - graphviz 
     # - dotenv
+    # - pydot
+    # - opencv-python-headless<4.10
