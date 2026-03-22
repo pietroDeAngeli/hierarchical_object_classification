@@ -23,7 +23,7 @@ _EXP_DICT = {
         "seed": None,
         "n_exp": 1,
         "setting": {"type": "tree",
-                    "setting_args": {"prob": [1.0, 0, 0, 0]}},
+                    "setting_args": {"prob": 1.0}},
         "dataset": {"split_seed": None,
                     "descriptor": None,
                     "dl_args": {},

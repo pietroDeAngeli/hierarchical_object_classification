@@ -1,67 +1,59 @@
 {
- "cuda": false,
- "seed": 0,
- "n_exp": 100,
- "setting": {
-  "type": "tree",
-  "setting_args": {
-   "prob": [
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    0.0,
-    1.0
-   ]
-  }
- },
- "dataset": {
-  "split_seed": 1,
-  "descriptor": "descriptor.json",
-  "dl_args": {},
-  "ds_args": {},
-  "pre_embedded": true,
-  "metadata": [],
-  "meta_args": [
-   {}
-  ]
- },
- "agent": {
-  "bootstrap": 10,
-  "fn": {
-   "add_seen_element": "separate"
+  "cuda": true,
+  "seed": 0,
+  "n_exp": 100,
+  "setting": {
+    "type": "tree",
+    "setting_args": {
+      "prob": 1.0
+    }
   },
-  "name": "online",
-  "max_neigh_check": 1,
-  "remove": null,
-  "ag_args": {},
-  "obj_mem_args": {
-   "evm_args": {
-    "cover_threshold": 0.5,
-    "margin_scale": 1.0,
-    "num_to_fuse": 1,
-    "reduce": true,
-    "tailsize": 25
-   },
-   "update_policy": "recompute"
-  }
- },
- "model": {
-  "embedding": "dinov3",
-  "ag_args": [
-   {
-    "window_sizes": [
-     50
-    ],
-    "strides": [
-     25
+  "dataset": {
+    "split_seed": 1,
+    "descriptor": "descriptor.json",
+    "dl_args": {},
+    "ds_args": {},
+    "pre_embedded": true,
+    "metadata": [],
+    "meta_args": [
+      {}
     ]
-   }
-  ],
-  "ag_dynamic": [
-   false
-  ]
- },
- "refine": null
+  },
+  "agent": {
+    "bootstrap": 10,
+    "fn": {
+      "add_seen_element": "separate"
+    },
+    "name": "online",
+    "max_neigh_check": 1,
+    "remove": null,
+    "ag_args": {},
+    "obj_mem_args": {
+      "evm_args": {
+        "cover_threshold": 0.5,
+        "margin_scale": 1.0,
+        "num_to_fuse": 1,
+        "reduce": true,
+        "tailsize": 25
+      },
+      "update_policy": "recompute"
+    }
+  },
+  "model": {
+    "embedding": "dinov3",
+    "ag_args": [
+      {
+        "window_sizes": [
+          50
+        ],
+        "strides": [
+          25
+        ]
+      }
+    ],
+    "ag_dynamic": [
+      false
+    ]
+  },
+  "refine": null
 }

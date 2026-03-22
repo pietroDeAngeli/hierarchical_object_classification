@@ -3,7 +3,8 @@ from __future__ import division
 import logging
 import itertools
 import numpy as np
-from .supervision import supervisor_factory
+import torch
+from .supervision import supervisor_factory, get_supervision_stat
 from . import utils
 
 
@@ -67,7 +68,8 @@ def counter(start=0):
         start += 1
 
 
-def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}]):
+def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
+                  batch_size=1):
     logger = logging.getLogger("recsiam.openworld.do_experiment")
 
     logger.debug("session = {}\tsession len = {}\tsession range {}".format(
@@ -106,34 +108,67 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}]):
                 logger.debug("obj_id={}\tmet_keys = {}\tmeta_values = {}".format(obj_id, m, meta))
 
     logger.debug("started session")
-    for ds_ind, ((data, obj_id), s_id) in enumerate(zip(*session_seqs)):
-        logger.debug("processing object {} ({} / {})".format(obj_id, ds_ind,
-                                                             len(session_seqs[1])))
+    if batch_size > 1:
+        # --- Batch training mode ---
+        session_items = list(zip(*session_seqs))   # [(data, obj_id), s_id]
+        for start in range(0, len(session_items), batch_size):
+            chunk = session_items[start:start + batch_size]
 
-        for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
-            meta = session_seqs[0].dataset.get_metadata(m, ds_ind, **m_a)
-            session_metadata[i].append(meta)
-            logger.debug("ds_ind ={}\tobj_id={}\tmet_keys = {}\tmeta_values = {}".format(ds_ind, obj_id, m, meta))
+            for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
+                for local_i, ((data, obj_id), s_id) in enumerate(chunk):
+                    ds_ind = start + local_i
+                    meta = session_seqs[0].dataset.get_metadata(m, ds_ind, **m_a)
+                    session_metadata[i].append(meta)
 
-        # process next video
-        pred, prob, sup, cost, ask = agent.process_next(data, s_id)
+            batch_input = [(data, s_id) for (data, obj_id), s_id in chunk]
+            batch_results = agent.process_batch(batch_input)
 
-        session_pred.append(pred if pred is not None else _NOPRED)
-        session_prob.append(prob)
-        session_ask.append(ask)
-        session_sup.append(sup if sup is not None else _NOSUP)
-        session_id.append(s_id)
-        session_class.append(obj_id)
-        session_cost.append(cost if cost is not None else _NOCOST)
+            for (result, ((data, obj_id), s_id)) in zip(batch_results, chunk):
+                pred, prob, sup, cost, ask = result
 
-        if "window_thresholds" in agent.__class__.__dict__:
-            thr = agent.window_thresholds
-        else:
-            thr = [agent.linear_threshold] * 2
+                session_pred.append(pred if pred is not None else _NOPRED)
+                session_prob.append(prob)
+                session_ask.append(ask)
+                session_sup.append(sup if sup is not None else _NOSUP)
+                session_id.append(s_id)
+                session_class.append(obj_id)
+                session_cost.append(cost if cost is not None else _NOCOST)
 
-        session_thr.append(thr)
+                if "window_thresholds" in agent.__class__.__dict__:
+                    thr = agent.window_thresholds
+                else:
+                    thr = [agent.linear_threshold] * 2
+                session_thr.append(thr)
+                session_hyer.append(list(agent.obj_mem.T.edges))
+    else:
+        # --- Online (one sample at a time) mode ---
+        for ds_ind, ((data, obj_id), s_id) in enumerate(zip(*session_seqs)):
+            logger.debug("processing object {} ({} / {})".format(obj_id, ds_ind,
+                                                                 len(session_seqs[1])))
 
-        session_hyer.append(list(agent.obj_mem.T.edges))
+            for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
+                meta = session_seqs[0].dataset.get_metadata(m, ds_ind, **m_a)
+                session_metadata[i].append(meta)
+                logger.debug("ds_ind ={}\tobj_id={}\tmet_keys = {}\tmeta_values = {}".format(ds_ind, obj_id, m, meta))
+
+            # process next video
+            pred, prob, sup, cost, ask = agent.process_next(data, s_id)
+
+            session_pred.append(pred if pred is not None else _NOPRED)
+            session_prob.append(prob)
+            session_ask.append(ask)
+            session_sup.append(sup if sup is not None else _NOSUP)
+            session_id.append(s_id)
+            session_class.append(obj_id)
+            session_cost.append(cost if cost is not None else _NOCOST)
+
+            if "window_thresholds" in agent.__class__.__dict__:
+                thr = agent.window_thresholds
+            else:
+                thr = [agent.linear_threshold] * 2
+
+            session_thr.append(thr)
+            session_hyer.append(list(agent.obj_mem.T.edges))
 
         # validate / test
         if do_eval:

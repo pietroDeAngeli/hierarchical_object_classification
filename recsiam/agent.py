@@ -1,42 +1,3 @@
-"""
-This module defines the `Agent` and `ActiveAgent` classes, as well as several utility functions and templates for creating agents. 
-These agents are designed to interact with a memory structure, make predictions, and request supervision when necessary.
-Classes:
----------
-- Agent:
-    Represents a basic agent that interacts with object memory and supervision memory, 
-    makes predictions, and processes data.
-- ActiveAgent:
-    Inherits from `Agent` and introduces active learning capabilities by using thresholds 
-    to decide when to request supervision.
-Functions:
-----------
-- online_agent_template(model_factory, seed, supervisor, memory_factory, bootstrap, **kwargs):
-    Creates an instance of the `Agent` class with the provided parameters.
-- active_agent_template(model_factory, seed, supervisor, memory_factory, sup_effort, bootstrap, **kwargs):
-    Creates an instance of the `ActiveAgent` class with the provided parameters.
-- online_agent_factory(model_factory, **kwargs):
-    Returns a partial function for creating `Agent` instances.
-- active_agent_factory(model_factory, **kwargs):
-    Returns a partial function for creating `ActiveAgent` instances. Requires `sup_effort` in kwargs.
-- _t(shape):
-    Utility function that returns a numpy array of ones with the specified shape and boolean dtype.
-- _f(shape):
-    Utility function that returns a numpy array of zeros with the specified shape and boolean dtype.
-- online_decide(distance, sup_mem):
-    Determines whether to request supervision based on the distance and supervision memory using a linear threshold.
-- active_decide_by_entropy(distance, sup_mem, fraction):
-    Determines whether to request supervision based on entropy thresholds and a fraction of the supervision memory.
-- active_decide_by_consensus(distance, sup_mem, fraction):
-    Determines whether to request supervision based on consensus thresholds and a fraction of the supervision memory.
-Attributes:
------------
-- _T:
-    A constant numpy array of shape (1,) with boolean dtype and value True.
-- _F:
-    A constant numpy array of shape (1,) with boolean dtype and value False.
-"""
-
 from __future__ import division
 
 import torch
@@ -184,6 +145,76 @@ class Agent(object):
         final_prob = probs[amax]
 
         return (final_pred, False), final_prob,  True
+
+    def process_batch(self, batch):
+        """Process a list of (data, s_id) pairs with a single EVM refit at the end.
+
+        Predictions for all elements use the EVM state at the start of the
+        batch.  Tree structure is updated incrementally element by element
+        (via _add_element_no_evm_update) so that supervision queries for
+        later elements can reference nodes added by earlier ones.  A single
+        recompute_all_update_evm() is called after all insertions.
+
+        Parameters
+        ----------
+        batch : list of (data, s_id) tuples
+
+        Returns
+        -------
+        list of (pred, prob, sup, cost, ask) tuples, one per input element.
+        """
+        self.model.eval()
+        with torch.no_grad():
+            embeds = [self.forward(data).cpu().numpy() for data, _ in batch]
+
+        results = []
+
+        for embed, (data, s_id) in zip(embeds, batch):
+            self.cnt += 1
+
+            if len(self.obj_mem) == 0:
+                self.obj_mem._add_element_no_evm_update(
+                    s_id, embed, None, False, True)
+                results.append((None, 1.0, None, None, False))
+                continue
+
+            if len(self.sup_mem) > 0:
+                pred, prob, ask = self.predict(embed, embedded=True)
+            else:
+                pred, prob, ask = (utils.get_root(self.obj_mem.T), False), 1.0, True
+
+            if self.in_bootstrap():
+                ask = True
+
+            sup_ret = self.supervisor.ask_supervision(s_id, pred, self)
+            sup, cost = sup_ret[:2], sup_ret[2]
+
+            if ask:
+                if not utils.is_ancestor(self.obj_mem.T, pred[0], sup[0]):
+                    self.sup_mem.add_entry(False, prob)
+                elif not sup[1] and utils.is_leaf(self.obj_mem.T, sup[0]):
+                    if len(self.obj_mem.T.nodes) > 1:
+                        par = next(iter(self.obj_mem.T.pred[sup[0]]))
+                        cls = self.obj_mem.T.nodes[par]["cls"]
+                        if cls is not None and len(cls.labels) > 0:
+                            res = cls.predict(embed, True)
+                            cl_ind = np.where(cls.labels == sup[0])[0]
+                            if len(cl_ind) > 0:
+                                prob = res[2][:, cl_ind].max()
+                            self.sup_mem.add_entry(True, prob)
+                self.obj_mem._add_element_no_evm_update(
+                    s_id, embed, sup[0], sup[1], True)
+            else:
+                self.obj_mem._add_element_no_evm_update(
+                    s_id, embed, pred[0], pred[1], False)
+
+            results.append((pred, prob, sup, cost, ask))
+
+        # In batch mode, refresh trainable internal nodes from accumulated
+        # child examples, including parent classifiers.
+        self.obj_mem.recompute_parent_evms_from_children()
+
+        return results
 
     @property
     def linear_threshold(self):

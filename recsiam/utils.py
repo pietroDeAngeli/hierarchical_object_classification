@@ -215,8 +215,8 @@ def rec_tree_from_lists(lists, G, parent, permissive):
         node = lists
         elem = set((lists,))
     else:
-        if not permissive:
-            assert len(lists) >= 2
+        #if not permissive:
+            #assert len(lists) >= 2
         node = new_node_id(G)
         G.add_node(node)
         elem = [rec_tree_from_lists(child, G, node, permissive)
@@ -230,13 +230,24 @@ def rec_tree_from_lists(lists, G, parent, permissive):
 
 
 def shuffle_tree_by_distance(rng, hierarchy, classes, prob):
-    prob = np.asarray(prob)
-    assert prob.sum() == 1.
     taken = np.zeros(len(classes), dtype=np.bool_)
     pref = "inst_"
     tree = tree_with_instances(hierarchy, classes, pref)
+    depth = len(nx.algorithms.dag.dag_longest_path(tree)) - 1
 
-    assert len(nx.algorithms.dag.dag_longest_path(tree)) == len(prob) + 1
+    # Support relative mode: prob=1 starts from leaves, prob=0 starts from root.
+    if np.isscalar(prob):
+        if prob not in (0, 1, 0.0, 1.0):
+            raise ValueError("Scalar prob must be 0 or 1 in tree setting")
+        prob_vec = np.zeros(depth, dtype=float)
+        prob_vec[-1 if float(prob) == 1.0 else 0] = 1.0
+        prob = prob_vec
+    else:
+        prob = np.asarray(prob, dtype=float)
+
+    assert prob.sum() == 1.
+
+    assert depth == len(prob)
 
     order = np.tile(-1, taken.size)
 

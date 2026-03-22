@@ -165,6 +165,8 @@ def fuse_prob_for_label(prob_mat, num_to_fuse):
     Averages probability of a certain class over the num_to_fuse most
     likely extreme vectors of that class
     """
+    if prob_mat.shape[0] == 0:
+        return np.zeros(prob_mat.shape[1])
     if prob_mat.shape[0] <= num_to_fuse:
         return  np.average(prob_mat, axis=0)
     else:

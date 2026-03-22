@@ -123,7 +123,7 @@ class ImageDataSet(Dataset):
             with lz4.frame.open(str(path), mode="rb") as f:
                 return np.load(f)
         if self.embedded:
-            return np.load(str(path))
+            return np.load(str(path), allow_pickle=True)
         img = io.imread(str(path))
         if img.ndim == 2:          # grayscale -> add channel dim
             img = img[..., None]
