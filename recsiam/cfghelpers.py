@@ -22,6 +22,7 @@ import torch
 _EXP_DICT = {
         "seed": None,
         "n_exp": 1,
+        "fixed_hierarchy": False,
         "setting": {"type": "tree",
                     "setting_args": {"prob": 1.0}},
         "dataset": {"split_seed": None,
@@ -120,6 +121,14 @@ def get_agent_factory(key):
 def prep_obj_mem(params):
     kwargs = params["agent"]["obj_mem_args"]
 
+    if params["fixed_hierarchy"]:
+        hierarchy = params["input_hierarchy"]
+
+        def instance_obj_mem_fixed():
+            return mem.FixedMemory(hierarchy=hierarchy, **kwargs)
+
+        return instance_obj_mem_fixed
+
     def instance_obj_mem():
         return mem.ObjectsMemory(**kwargs)
 
@@ -159,7 +168,7 @@ def run_ow_exp(params, workers, quiet=False, torch_threads=1):
     if torch_threads != -1:
         torch.set_num_threads(torch_threads)
 
-    pool = Parallel(n_jobs=workers, batch_size=1)
+    pool = Parallel(n_jobs=workers, batch_size=1) # TODO: Puoi aggiustare qui il batch size?
     keys = ["metadata", "meta_args"]
     args_exp = {k: params["dataset"][k] for k in keys}
 

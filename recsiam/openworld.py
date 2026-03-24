@@ -151,7 +151,7 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
                 session_metadata[i].append(meta)
                 logger.debug("ds_ind ={}\tobj_id={}\tmet_keys = {}\tmeta_values = {}".format(ds_ind, obj_id, m, meta))
 
-            # process next video
+            # process next img
             pred, prob, sup, cost, ask = agent.process_next(data, s_id)
 
             session_pred.append(pred if pred is not None else _NOPRED)
