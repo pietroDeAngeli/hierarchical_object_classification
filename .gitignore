@@ -3,18 +3,12 @@
 
 
 # Directories
-dataset
-iNaturalist2021_val
-not_to_process
-dataset
 results*
-outputs*
 
 # Files
 *.sbatch
 *.log
 .env
-*.pdf
 
 # swap files
 *.swp

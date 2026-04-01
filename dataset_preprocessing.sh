@@ -11,19 +11,6 @@ wordnet_map="coco9k.map"
 coco_names="coco.names"
 annotations_dir="annotations"
 
-# Hierarchy creation
-if [ -f "metadata.json" ]; then
-    echo "Metadata already present, skipping hierarchy creation"
-else
-    if [ -f "$wordnet_hierarchy" ]; then
-        echo "WordNet hierarchy file already present, skipping download"
-    else
-        wget https://raw.githubusercontent.com/pjreddie/darknet/1e729804f61c8627eb257fba8b83f74e04945db7/data/9k.tree
-        echo "Wordnet hierarchy downloaded"
-    fi
-
-    python scripts/generate_metadata.py
-fi
 
 if [ -d "dataset" ]; then
     echo "Dataset already present, skipping creation"
@@ -73,6 +60,20 @@ else
     else
         wget https://raw.githubusercontent.com/pjreddie/darknet/1e729804f61c8627eb257fba8b83f74e04945db7/data/9k.labels
         echo "WordNet labels downloaded"
+    fi
+
+    # Hierarchy creation
+    if [ -f "metadata.json" ]; then
+        echo "Metadata already present, skipping hierarchy creation"
+    else
+        if [ -f "$wordnet_hierarchy" ]; then
+            echo "WordNet hierarchy file already present, skipping download"
+        else
+            wget https://raw.githubusercontent.com/pjreddie/darknet/1e729804f61c8627eb257fba8b83f74e04945db7/data/9k.tree
+            echo "Wordnet hierarchy downloaded"
+        fi
+
+        python scripts/generate_metadata.py
     fi
     
     # Process annotations

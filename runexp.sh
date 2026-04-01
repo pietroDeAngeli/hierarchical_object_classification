@@ -3,48 +3,6 @@ set -e
 # DATASET creation
 # =================================================================================
 
-basedir=iNaturalist2021_val
-datadir=$basedir/val
-dataname=$basedir/"val.tar.gz"
-metadata_name=$basedir/"val.json.tar.gz"
-
-if [ -f "$dataname" -a -f "$metadata_name" ] ; then
-    echo "dataset '$dataname' and metadata '$metadata_name' already present, skipping download"
-else 
-    # download the dataset and metadata
-    echo "downloading dataset to '$datadir' folder"
-    python scripts/dataset_download.py
-fi
-if [ -d "$datadir" ] ; then
-    echo " '$datadir' folder already present, skipping unpacking"
-else 
-    # unpack the dataset and metadata
-    echo "Unpacking '$dataname' to '$datadir' folder"
-    tar -xvzf $dataname -C $basedir/
-    tar -xvzf $metadata_name -C $basedir/
-fi
-
-# Create dataset
-    dataset=dataset/
-    rm -rf $dataset
-    mkdir -p $dataset
-
-    echo "Creating dataset and hierarchy from '$datadir' folder and '$metadata_name' metadata"
-
-    python scripts/build_hierarchy.py \
-    --val-json $basedir/val.json \
-    --images-dir $basedir \
-    --dataset-dir $dataset \
-    --max-children 3 \
-    --num-examples 5 \
-    --output taxonomy_hierarchy \
-    --kingdom Animalia \
-    --inputs-dir inputs
-
-    echo "Pre-computing DINOv2 embeddings for '$dataset'..."
-    python scripts/embed_dataset.py $dataset
-
-    echo "Dataset created in '$dataset' folder"
 
 # =================================================================================
 # EXPERIMENTS
