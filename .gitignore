@@ -4,11 +4,13 @@
 
 # Directories
 results*
+dataset*
 
 # Files
 *.sbatch
 *.log
 .env
+.gitignore
 
 # swap files
 *.swp

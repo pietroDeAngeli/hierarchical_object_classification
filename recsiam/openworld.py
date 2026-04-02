@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from .supervision import supervisor_factory, get_supervision_stat
 from . import utils
+from . import eval as rec_eval
 
 
 _OBJ_ID = "obj_id"
@@ -91,90 +92,93 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
 
     eval_metadata = [[] for _ in metadata]
 
-    ev_data = []
-    ev_data_len = []
+    do_eval = (eval_seqs is not None)
 
-    do_eval = False
+    logger.debug("started session")
+
+    # --- Online (one sample at a time) mode ---
+    for ds_ind, ((data, obj_id), s_id) in enumerate(zip(*session_seqs)):
+        logger.debug("processing object {} ({} / {})".format(obj_id, ds_ind,
+                                                                len(session_seqs[1])))
+
+        for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
+            meta = session_seqs[0].dataset.get_metadata(m, ds_ind, **m_a)
+            session_metadata[i].append(meta)
+            logger.debug("ds_ind ={}\tobj_id={}\tmet_keys = {}\tmeta_values = {}".format(ds_ind, obj_id, m, meta))
+
+        # process next video
+        pred, prob, sup, cost, ask = agent.process_next(data, s_id)
+
+        session_pred.append(pred if pred is not None else _NOPRED)
+        session_prob.append(prob)
+        session_ask.append(ask)
+        session_sup.append(sup if sup is not None else _NOSUP)
+        session_id.append(s_id)
+        session_class.append(obj_id)
+        session_cost.append(cost if cost is not None else _NOCOST)
+
+        if "window_thresholds" in agent.__class__.__dict__:
+            thr = agent.window_thresholds
+        else:
+            thr = [agent.linear_threshold] * 2
+
+        session_thr.append(thr)
+        session_hyer.append(list(agent.obj_mem.T.edges))
+
+    # test
     if do_eval:
-        logger.debug("started evaluation data preload")
-        for ds_ind, (data, obj_id) in enumerate(eval_seqs):
-            eval_class.append(obj_id)
+        eval_true = []
+        eval_hat = []
+        logger.debug("started evaluation loop")
 
-            ev_data.append(data[0])
-            ev_data_len.append(len(data[0]))
+        # Build a mapping from tree node IDs (s_id integers used during training)
+        # to class name strings (e.g. "n02121620"), so that eval predictions and
+        # eval ground-truth labels live in the same label space.
+        train_fds = session_seqs[0].dataset.dataset  # FlattenedDataSet
+        s_id_to_class_name = {
+            i: train_fds.data[int(c_idx)]["id"]
+            for i, c_idx in enumerate(session_class)
+        }
+        eval_fds = eval_seqs.dataset  # FlattenedDataSet for eval split
+
+        for ds_ind, (data, obj_id) in enumerate(eval_seqs):
+            if isinstance(data, torch.Tensor):
+                batch_data = data.cpu().numpy()
+            else:
+                batch_data = np.asarray(data)
+
+            obj_id = np.asarray(obj_id)
+            if obj_id.ndim == 0:
+                obj_id = obj_id[None]
+
+            for b in range(len(obj_id)):
+                emb = np.asarray(batch_data[b])
+                if emb.ndim == 1:
+                    emb = emb[None, :]
+
+                pred = agent.predict(emb, embedded=True)[0][0]
+
+                eval_true.append(eval_fds.data[int(obj_id[b])]["id"])
+                eval_hat.append(s_id_to_class_name.get(pred, None))
+
             for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
                 meta = eval_seqs.dataset.get_metadata(m, ds_ind, **m_a)
                 eval_metadata[i].append(meta)
-                logger.debug("obj_id={}\tmet_keys = {}\tmeta_values = {}".format(obj_id, m, meta))
 
-    logger.debug("started session")
-    if batch_size > 1:
-        # --- Batch training mode ---
-        session_items = list(zip(*session_seqs))   # [(data, obj_id), s_id]
-        for start in range(0, len(session_items), batch_size):
-            chunk = session_items[start:start + batch_size]
-
-            for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
-                for local_i, ((data, obj_id), s_id) in enumerate(chunk):
-                    ds_ind = start + local_i
-                    meta = session_seqs[0].dataset.get_metadata(m, ds_ind, **m_a)
-                    session_metadata[i].append(meta)
-
-            batch_input = [(data, s_id) for (data, obj_id), s_id in chunk]
-            batch_results = agent.process_batch(batch_input)
-
-            for (result, ((data, obj_id), s_id)) in zip(batch_results, chunk):
-                pred, prob, sup, cost, ask = result
-
-                session_pred.append(pred if pred is not None else _NOPRED)
-                session_prob.append(prob)
-                session_ask.append(ask)
-                session_sup.append(sup if sup is not None else _NOSUP)
-                session_id.append(s_id)
-                session_class.append(obj_id)
-                session_cost.append(cost if cost is not None else _NOCOST)
-
-                if "window_thresholds" in agent.__class__.__dict__:
-                    thr = agent.window_thresholds
-                else:
-                    thr = [agent.linear_threshold] * 2
-                session_thr.append(thr)
-                session_hyer.append(list(agent.obj_mem.T.edges))
+        # Filter out pairs where the model predicted an internal/genus node
+        # (not in s_id_to_class_name), which would yield None and crash np.unique.
+        valid = [(t, p) for t, p in zip(eval_true, eval_hat) if p is not None]
+        if valid:
+            eval_class = np.asarray([v[0] for v in valid], dtype=object)
+            eval_pred = np.asarray([v[1] for v in valid], dtype=object)
+        else:
+            eval_class = np.array([], dtype=object)
+            eval_pred = np.array([], dtype=object)
+        eval_metrics = rec_eval.compute_eval_metrics(eval_class, eval_pred, agent.obj_mem.T)
     else:
-        # --- Online (one sample at a time) mode ---
-        for ds_ind, ((data, obj_id), s_id) in enumerate(zip(*session_seqs)):
-            logger.debug("processing object {} ({} / {})".format(obj_id, ds_ind,
-                                                                 len(session_seqs[1])))
-
-            for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
-                meta = session_seqs[0].dataset.get_metadata(m, ds_ind, **m_a)
-                session_metadata[i].append(meta)
-                logger.debug("ds_ind ={}\tobj_id={}\tmet_keys = {}\tmeta_values = {}".format(ds_ind, obj_id, m, meta))
-
-            # process next video
-            pred, prob, sup, cost, ask = agent.process_next(data, s_id)
-
-            session_pred.append(pred if pred is not None else _NOPRED)
-            session_prob.append(prob)
-            session_ask.append(ask)
-            session_sup.append(sup if sup is not None else _NOSUP)
-            session_id.append(s_id)
-            session_class.append(obj_id)
-            session_cost.append(cost if cost is not None else _NOCOST)
-
-            if "window_thresholds" in agent.__class__.__dict__:
-                thr = agent.window_thresholds
-            else:
-                thr = [agent.linear_threshold] * 2
-
-            session_thr.append(thr)
-            session_hyer.append(list(agent.obj_mem.T.edges))
-
-        # validate / test
-        if do_eval:
-            e = np.array([agent.predict(elem)[0]
-                          for elem in ev_data]).astype(int)
-            eval_pred.append(e)
+        eval_class = np.array([], dtype=object)
+        eval_pred = np.array([], dtype=object)
+        eval_metrics = rec_eval.compute_eval_metrics([], [], None)
 
     s_d = {"pred": np.squeeze(session_pred),
            _SEQ_ID: np.squeeze(session_id),
@@ -189,9 +193,10 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
            }
 
     e_d = {"pred": np.squeeze(eval_pred),
-           _OBJ_ID: np.squeeze(eval_class),
-           **{m: np.asarray(v) for m, v in zip(metadata, eval_metadata)}
-           }
+        _OBJ_ID: np.squeeze(eval_class),
+        "metrics": np.array(eval_metrics, dtype=object),
+        **{m: np.asarray(v) for m, v in zip(metadata, eval_metadata)}
+        }
 
     return s_d, e_d
 
@@ -200,13 +205,10 @@ def stack_results(res_l):
 
     stacked = {}
     for key in res_l[0]:
-        if len(res_l) > 1:
-            try:
-                stacked[key] = np.array([r[key] for r in res_l])
-            except ValueError:
-                stacked[key] = np.array([r[key] for r in res_l], dtype=object)
-        else:
-            stacked[key] = res_l[0][key][None, ...]
+        try:
+            stacked[key] = np.array([r[key] for r in res_l])
+        except (ValueError, TypeError):
+            stacked[key] = np.array([r[key] for r in res_l], dtype=object)
 
     return stacked
 

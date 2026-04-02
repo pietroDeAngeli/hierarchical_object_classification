@@ -1,5 +1,7 @@
 import itertools
 import random
+import json
+from pathlib import Path
 
 
 import torch
@@ -199,6 +201,112 @@ def tree_from_list(info, permissive=False):
     if type(info) != list or len(info) > 0:
         rec_tree_from_lists(info, tree, None, permissive)
     return tree
+
+
+def load_descriptor(descriptor):
+    if isinstance(descriptor, (str, Path)):
+        with Path(descriptor).open("r") as ifile:
+            return json.load(ifile)
+    return descriptor
+
+
+def _descriptor_targets(objects):
+    targets = set()
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        if "name" in obj:
+            targets.add(obj["name"])
+        elif "id" in obj:
+            targets.add(obj["id"])
+    return targets
+
+
+def _prune_hierarchy(h, targets):
+    """Prune a nested-list hierarchy keeping only paths to *targets*.
+
+    Nodes (strings) not in *targets* are removed.  Internal nodes (lists)
+    with no surviving children are removed.  Internal nodes that collapse to
+    a single surviving child are replaced by that child directly, to avoid
+    uninformative single-branch splits where EVM training would be impossible.
+
+    Returns the pruned element, or None if nothing survived.
+    """
+    if not isinstance(h, list):
+        return h if h in targets else None
+
+    pruned = []
+    for child in h:
+        p = _prune_hierarchy(child, targets)
+        if p is not None:
+            pruned.append(p)
+
+    if len(pruned) == 0:
+        return None
+    if len(pruned) == 1:
+        # Collapse single-child internal nodes so every internal node has
+        # at least 2 children → EVM training is always possible.
+        return pruned[0]
+    return pruned
+
+
+def hierarchy_from_descriptor(descriptor): # Function for init_hierarchy
+    desc = load_descriptor(descriptor)
+
+    if isinstance(desc, dict):
+        info = desc
+        objects = []
+    elif isinstance(desc, (list, tuple)) and len(desc) >= 2:
+        info = desc[0]
+        objects = desc[1]
+    else:
+        raise ValueError("Descriptor must be a dict or a 2-element sequence: (info, objects)")
+
+    if not isinstance(info, dict):
+        raise ValueError("Descriptor info section must be a JSON object")
+
+    hierarchy = info.get("hierarchy")
+    if hierarchy is None:
+        targets = sorted(_descriptor_targets(objects))
+        if len(targets) == 0:
+            raise ValueError("Descriptor does not contain hierarchy nor object targets")
+        return ["Root", targets]
+
+    # Prune the (potentially large) full hierarchy to keep only the branches
+    # that lead to the actual dataset classes.  This removes thousands of
+    # WordNet nodes that have no corresponding samples and would otherwise
+    # make every internal EVM untrainable (all samples fall in one child).
+    targets = _descriptor_targets(objects)
+    if targets:
+        pruned = _prune_hierarchy(hierarchy, targets)
+        if pruned is not None:
+            hierarchy = pruned
+
+    return hierarchy
+
+def flat_hierarchy_from_descriptor(descriptor):
+	desc = load_descriptor(descriptor)
+	if not isinstance(desc, (list, tuple)) or len(desc) < 2:
+		raise ValueError("Descriptor must be a 2-element sequence: (info, objects)")
+
+	objects = desc[1]
+	classes = []
+	seen = set()
+	for obj in objects:
+		cls_name = obj.get("name", obj.get("id"))
+		if cls_name is None:
+			continue
+		if cls_name in seen:
+			continue
+		classes.append(cls_name)
+		seen.add(cls_name)
+
+	if len(classes) == 0:
+		raise ValueError("Descriptor does not contain any valid class name/id")
+
+	# tree_from_list builds internal nodes from list nesting only.
+	# A flat list of class labels yields exactly one internal root node.
+	return classes
 
 
 def new_node_id(tree):

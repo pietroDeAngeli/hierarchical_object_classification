@@ -76,6 +76,7 @@ def _weibull_fit(args):
     nearest = dists[mask]
     if nearest.size > tailsize:
         nearest = np.partition(nearest, tailsize)
+        #nearest = np.partition(nearest, tailsize)[:tailsize]
     else:
         tailsize = nearest.size
 

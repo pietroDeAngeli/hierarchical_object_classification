@@ -1,4 +1,25 @@
 set -e
+TEST_SIZE=140
+TEST_SEED=0
+TEST_SPLIT_DIR=${TEST_SPLIT_DIR:-results/test_splits}
+
+# Usage:
+#   ./runexp.sh                         # default: all inputs/*.json
+#   ./runexp.sh inputs/a80_b_1.json     # single input file
+#   ./runexp.sh inputs/a80_b_1.json inputs/o_b_1.json
+if [ "$#" -gt 0 ] ; then
+    INPUT_FILES=("$@")
+else
+    shopt -s nullglob
+    INPUT_FILES=(inputs/*.json)
+    shopt -u nullglob
+fi
+
+if [ "${#INPUT_FILES[@]}" -eq 0 ] ; then
+    echo "No input JSON files found."
+fi
+
+
 # =================================================================================
 # DATASET creation
 # =================================================================================
@@ -9,17 +30,32 @@ set -e
 # =================================================================================
 
 PYTHONPATH=. python  scripts/fs2desc.py dataset descriptor.json
-nexp=$(ls -1 inputs | wc -l) 
+nexp=${#INPUT_FILES[@]}
 echo "loading $nexp experiments" 
 counter=1 
 mkdir -p results
- for i in inputs/*.json ; do 
+if [ "$TEST_SIZE" -gt 0 ] ; then
+    mkdir -p "$TEST_SPLIT_DIR"
+    echo "fixed test split enabled: TEST_SIZE=$TEST_SIZE TEST_SEED=$TEST_SEED"
+fi
+for i in "${INPUT_FILES[@]}" ; do 
+      if [ ! -f "$i" ] ; then
+          echo [${counter}/${nexp}]: ${i} not found, skipping
+          : $((counter++))
+          continue
+      fi
      o=results/$(basename $i).npy.lz4
      if [ -f "$o" ] ; then
         echo [${counter}/${nexp}]: ${i} already done, skipping 
     else 
         echo -n [${counter}/${nexp}]": "
-        PYTHONPATH=. python scripts/json_train.py  --results ${o} ${i} 
+        if [ "$TEST_SIZE" -gt 0 ] ; then
+            test_json=${TEST_SPLIT_DIR}/$(basename "$i" .json)_test.json
+            PYTHONPATH=. python scripts/json_train.py --results ${o} ${i} \
+                --test-size "$TEST_SIZE" --test-seed "$TEST_SEED" --test-output "$test_json"
+        else
+            PYTHONPATH=. python scripts/json_train.py --results ${o} ${i}
+        fi
     fi 
     : $((counter++)) 
  done 

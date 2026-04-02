@@ -69,11 +69,16 @@ def prep_dataset(params, base_key="dataset"):
     else:
         desc = params[base_key]["descriptor"]
 
+    eval_desc = params[base_key].get("eval_descriptor", None)
+    if isinstance(eval_desc, (str, Path)):
+        eval_desc = load_dataset_descriptor(eval_desc)
+
     fac = data.train_factory(desc,
                              params[base_key]["split_seed"],
                              dl_args=params[base_key]["dl_args"],
                              ds_args=params[base_key]["ds_args"],
-                             setting=params["setting"])
+                             setting=params["setting"],
+                             eval_desc=eval_desc)
 
     return fac
 
@@ -89,10 +94,8 @@ def prep_model(params):
     def instance_model():
 
         if params["dataset"]["pre_embedded"]:
-            # se usi embedding già salvati
             return torch.nn.Identity()
 
-        # embedding = stringa tipo "dinov3"
         emb_name = params["model"]["embedding"]
 
         emb_model_factory = emb.get_embedding(emb_name)

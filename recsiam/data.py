@@ -344,7 +344,7 @@ class ExtendedSubset(Subset):
 
 
 
-def train_shuf(dataset, seed, dl_args={}, setting=None):
+def train_shuf(dataset, seed, dl_args={}, setting=None, eval_dataset=None):
     rs = np.random.RandomState
     rnd_s, rnd_e, rnd_i = [rs(s) for s in rs(seed).randint(2**32 - 1, size=3)]
     if setting is None:
@@ -361,13 +361,24 @@ def train_shuf(dataset, seed, dl_args={}, setting=None):
     train_ds = ExtendedSubset(dataset, train_ind)
     train_dl = torch.utils.data.DataLoader(train_ds, shuffle=False, collate_fn=list_collate, **dl_args)
 
-    return train_dl, None, None
+    eval_dl = None
+    if eval_dataset is not None and len(eval_dataset) > 0:
+        eval_dl = torch.utils.data.DataLoader(eval_dataset,
+                                              shuffle=False,
+                                              collate_fn=list_collate,
+                                              **dl_args)
+
+    return train_dl, eval_dl, None
 
 
 def train_factory(train_desc, test_seed, dl_args={}, ds_args={},
-                  setting=None):
+                  setting=None, eval_desc=None):
 
     train_ds = FlattenedDataSet(train_desc, **ds_args)
+    eval_ds = None
+    if eval_desc is not None:
+        eval_ds = FlattenedDataSet(eval_desc, **ds_args)
 
     return functools.partial(train_shuf, train_ds,
-                             dl_args=dl_args, setting=setting)
+                             dl_args=dl_args, setting=setting,
+                             eval_dataset=eval_ds)

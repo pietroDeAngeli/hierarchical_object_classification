@@ -278,8 +278,10 @@ class ObjectsMemory(object):
 
             return node, ind, prob
 
-        cls = self.T.nodes[utils.get_root(self.T)]["cls"]
-        ndim = cls.X.ndim
+        # cls = self.T.nodes[utils.get_root(self.T)]["cls"]
+        # ndim = cls.X.ndim
+        # Embeddings are always 2-D arrays (N, D); a single sample is 1-D (D,).
+        ndim = 2
         assert data.ndim - ndim in (0, -1)
 
         unsq = False
@@ -338,6 +340,7 @@ class ObjectsMemory(object):
         best = None
         best_prob = 0.0
         index = 0
+        prob = 0.0
 
         while best_prob < thr_a:
             if currents is None:
@@ -354,6 +357,193 @@ class ObjectsMemory(object):
                     index = i
 
         return best, index, prob
+
+class StaticHierarchyMemory(ObjectsMemory):
+    """ObjectsMemory variant with fixed topology.
+
+    This class disables structural changes of the hierarchy while preserving the
+    same EVM update logic used by the online module.
+    """
+
+    def __init__(self, hierarchy, evm_args, update_policy="recompute",
+                 rng=np.random.RandomState(), bootstrap=2, force=None,
+                 predict_policy="tree", evm_batch_size=1):
+        if evm_batch_size < 1:
+            raise ValueError("evm_batch_size must be >= 1")
+        super().__init__(evm_args=evm_args,
+                         update_policy=update_policy,
+                         rng=rng,
+                         bootstrap=bootstrap,
+                         force=force,
+                         predict_policy=predict_policy)
+        self.T = _build_fixed_tree(hierarchy)
+        self.evm_batch_size = int(evm_batch_size)
+        self._pending_updates = []
+        self._pending_leaf_updates = set()
+        self._pending_update_count = 0
+        self._leaf_nodes = set(n for n in self.T.nodes if utils.is_leaf(self.T, n))
+
+    def _clear_pending_updates(self):
+        self._pending_updates = []
+        self._pending_leaf_updates = set()
+        self._pending_update_count = 0
+
+    def _flush_pending_updates(self):
+        if self._pending_update_count == 0:
+            return
+
+        if self.update_policy == "recompute":
+            dirty_nodes = self.affected_internal_nodes_from_leaves(self._pending_leaf_updates)
+            self.logger.debug(
+                "Flushing %d pending samples touching %d leaves and %d internal nodes",
+                self._pending_update_count,
+                len(self._pending_leaf_updates),
+                len(dirty_nodes),
+            )
+            self.recompute_nodes(dirty_nodes)
+        else:
+            for upd_id, upd_data, upd_pred in self._pending_updates:
+                self.update_evm(upd_id, upd_data, upd_pred)
+
+        self._clear_pending_updates()
+    
+    def _node_depth(self, node):
+        root = self.get_root()
+        return nx.shortest_path_length(self.T, source=root, target=node)
+
+    def _ordered_internal_nodes(self, nodes, reverse=True):
+        internal_nodes = [n for n in nodes if not utils.is_leaf(self.T, n)]
+        return sorted(internal_nodes,
+                      key=self._node_depth,
+                      reverse=reverse)
+
+    def add_element(self, new_id, new_data, target, new_genus, supervised, pred=None):
+        if new_genus:
+            raise ValueError("StaticHierarchyMemory forbids new genus insertion")
+        if target not in self.T.nodes:
+            raise KeyError("Target node '{}' is not in the fixed hierarchy".format(target))
+        if target not in self._leaf_nodes:
+            raise ValueError("Target node '{}' must be a leaf in fixed hierarchy".format(target))
+
+        field = "elem"
+
+        # In static mode each new sample is attached to an existing leaf.
+        self.inst[new_id] = target
+        propagate_id(self.T, target, new_id, field)
+
+        self.M = utils.a_app(self.M, new_data, ndim=2)
+        self.elem_ids = utils.a_app(self.elem_ids,
+                                    np.tile(new_id, new_data.shape[0]),
+                                    ndim=1).astype(object)
+        self.elem_node_ids = utils.a_app(self.elem_node_ids,
+                                         np.tile(target, new_data.shape[0]),
+                                         ndim=1).astype(object)
+        self.sup[new_id] = supervised
+
+        self._pending_update_count += 1
+        if self.update_policy == "recompute":
+            self._pending_leaf_updates.add(target)
+        else:
+            self._pending_updates.append((new_id, new_data, pred))
+        if self._pending_update_count >= self.evm_batch_size:
+            self._flush_pending_updates()
+
+    def finalize_updates(self):
+        """Flush any pending batched EVM updates."""
+        if self._pending_update_count > 0:
+            self._flush_pending_updates()
+
+    def recompute_evm_for_node(self, node):
+
+        childs = list(self.T.succ[node])
+        labels = np.empty(self.elem_ids.size, dtype=object)
+        data_mask = np.zeros(self.elem_ids.size, dtype=np.bool_)
+
+        for c in childs:
+            c_leaves = list(self._leaves_under(c))
+            c_mask = np.isin(self.elem_node_ids, c_leaves)
+
+            assert not np.any(data_mask & c_mask)
+            data_mask |= c_mask
+            labels[c_mask] = c
+
+        labels = labels[data_mask]
+        points = self.M[data_mask]
+        negatives = self.M[~data_mask]
+
+        has_negatives = (len(negatives) > 0) or (np.unique(labels).size > 1)
+        if points.size == 0 or not has_negatives:
+            self.T.nodes[node]["cls"] = None
+            self.logger.debug(
+                "Skipping EVM fit for node %s (points=%d, negatives=%d, unique_labels=%d)",
+                node,
+                len(points),
+                len(negatives),
+                np.unique(labels).size if labels.size > 0 else 0,
+            )
+            return
+
+        self.T.nodes[node]["cls"] = self.new_evm()
+        self.T.nodes[node]["cls"].fit(points, labels, neg_X=negatives)
+
+    def _leaves_under(self, node):
+        """Return the set of leaf descendants of *node* (or {node} if already a leaf)."""
+        if utils.is_leaf(self.T, node):
+            return {node}
+        return {n for n in nx.descendants(self.T, node) if utils.is_leaf(self.T, n)}
+
+    def affected_internal_nodes_from_leaves(self, leaf_nodes):
+        dirty_nodes = set()
+        for leaf in leaf_nodes:
+            dirty_nodes.update(utils.gen_parents(leaf, self.T))
+        return dirty_nodes
+
+    def recompute_nodes(self, nodes):
+        for node in self._ordered_internal_nodes(nodes, reverse=True):
+            self.recompute_evm_for_node(node)
+
+    def predict_single_from_root(self, data, thr_a, thr_r=None):
+        if len(self.T.nodes) == 0:
+            raise ValueError("Memory is empty")
+        current = utils.get_root(self.T)
+        prob = np.ones(1)
+        index = 0
+
+        if thr_r is None:
+            thr_r = thr_a
+
+        if self.force != "top":
+            while not utils.is_leaf(self.T, current):
+                cls = self.T.nodes[current]["cls"]
+                if cls is None:
+                    # No EVM for this node: sparse subtree with only one populated child.
+                    # Auto-descend to that child, or pick first populated child if ambiguous.
+                    # Loop condition ensures we eventually reach a leaf with string synset name.
+                    children = list(self.T.succ[current])
+                    populated = [c for c in children
+                                 if self.T.nodes[c].get("elem")]
+                    if len(populated) >= 1:
+                        current = populated[0]  # Pick first populated child
+                        continue
+                    break
+                pred, i, probabilities = cls.predict(data, True)
+                if probabilities[i] >= thr_r or self.force == "bot":
+                    current = pred
+                    prob = probabilities
+                    index = i
+                if probabilities[i] < thr_a and self.force != "bot":
+                    break
+
+            assert index in range(len(prob))
+        return current, index, prob
+
+def _build_fixed_tree(hierarchy):
+    tree = utils.tree_from_list(hierarchy)
+    for node in tree.nodes:
+        tree.nodes[node].setdefault("elem", set())
+        tree.nodes[node].setdefault("uelem", set())
+        tree.nodes[node].setdefault("cls", None)
+    return tree
 
 
 class SupervisionMemory(torch.utils.data.Dataset):
