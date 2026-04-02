@@ -52,7 +52,7 @@ for i in "${INPUT_FILES[@]}" ; do
         if [ "$TEST_SIZE" -gt 0 ] ; then
             test_json=${TEST_SPLIT_DIR}/$(basename "$i" .json)_test.json
             PYTHONPATH=. python scripts/json_train.py --results ${o} ${i} \
-                --test-size "$TEST_SIZE" --test-seed "$TEST_SEED" --test-output "$test_json"
+                --test-size "$TEST_SIZE" --test-seed "$TEST_SEED" --test-output "$test_json" --eval-test
         else
             PYTHONPATH=. python scripts/json_train.py --results ${o} ${i}
         fi

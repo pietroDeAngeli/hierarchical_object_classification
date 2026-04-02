@@ -125,6 +125,32 @@ def main(cmdline):
 
     results = cfg.run_ow_exp(params_run, cmdline.workers, torch_threads=cmdline.threads)
 
+    if cmdline.eval_test and cmdline.test_size > 0:
+        eval_res = results[1]
+        # eval_res["metrics"] is an array of dicts, one per experiment run
+        metrics_list = eval_res["metrics"].tolist()
+        agg_metrics = {}
+        for key in ["accuracy", "precision", "f1", "mean_geodesic_distance"]:
+            vals = [m[key] for m in metrics_list if isinstance(m, dict) and m.get(key) is not None]
+            agg_metrics[key] = float(np.mean(vals)) if vals else None
+        for key in ["total_nodes", "leaf_nodes"]:
+            vals = [v for v in eval_res[key].tolist() if v is not None]
+            agg_metrics[key] = float(np.mean(vals)) if vals else None
+        logging.info("Aggregated test metrics over %d runs: %s", len(metrics_list), agg_metrics)
+
+        if cmdline.test_output is not None:
+            # re-open and update the test_output JSON written above
+            test_output_path = Path(cmdline.test_output)
+            if test_output_path.exists():
+                with test_output_path.open("r") as ifile:
+                    test_payload = json.load(ifile)
+            else:
+                test_payload = {}
+            test_payload["eval_test"] = True
+            test_payload["metrics"] = agg_metrics
+            with test_output_path.open("w") as ofile:
+                json.dump(test_payload, ofile, indent=1)
+
     if cmdline.results is None:
         outfile, outfile_path = tempfile.mkstemp(prefix="json-train",
                                                  suffix=".npy.lz4")
@@ -153,6 +179,8 @@ if __name__ == '__main__':
                         help="seed for fixed test split (default: dataset split_seed from input json)")
     parser.add_argument("--test-output", type=str, default=None,
                         help="optional json path to store sampled test set metadata")
+    parser.add_argument("--eval-test", action="store_true",
+                        help="aggregate eval metrics from all runs and store in test-output JSON")
     parser.add_argument("-w", "--workers", type=int, default=-1,
                         help="number of joblib workers")
     parser.add_argument("-t", "--threads", type=int, default=1,

@@ -175,10 +175,17 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
             eval_class = np.array([], dtype=object)
             eval_pred = np.array([], dtype=object)
         eval_metrics = rec_eval.compute_eval_metrics(eval_class, eval_pred, agent.obj_mem.T)
+
+        T = agent.obj_mem.T
+        total_nodes = len(T.nodes)
+        leaf_nodes = sum(1 for n in T.nodes if T.out_degree(n) == 0)
+        logger.info("Tree at end of eval: total_nodes=%d leaf_nodes=%d", total_nodes, leaf_nodes)
     else:
         eval_class = np.array([], dtype=object)
         eval_pred = np.array([], dtype=object)
         eval_metrics = rec_eval.compute_eval_metrics([], [], None)
+        total_nodes = 0
+        leaf_nodes = 0
 
     s_d = {"pred": np.squeeze(session_pred),
            _SEQ_ID: np.squeeze(session_id),
@@ -195,6 +202,8 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
     e_d = {"pred": np.squeeze(eval_pred),
         _OBJ_ID: np.squeeze(eval_class),
         "metrics": np.array(eval_metrics, dtype=object),
+        "total_nodes": total_nodes,
+        "leaf_nodes": leaf_nodes,
         **{m: np.asarray(v) for m, v in zip(metadata, eval_metadata)}
         }
 
