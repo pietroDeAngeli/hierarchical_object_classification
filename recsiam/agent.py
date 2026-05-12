@@ -116,9 +116,11 @@ class Agent(object):
                     par = next(iter(self.obj_mem.T.pred[sup[0]]))
                     cls = self.obj_mem.T.nodes[par]["cls"]
 
-                    res = cls.predict(embed, True)
-                    cl_ind = np.where(cls.labels == sup[0])[0]
-                    prob = res[2][:, cl_ind].max()
+                    if cls is not None:
+                        res = cls.predict(embed, True)
+                        cl_ind = np.where(cls.labels == sup[0])[0]
+                        if cl_ind.size > 0:
+                            prob = res[2][:, cl_ind].max()
                     self.sup_mem.add_entry(True, prob)
 
             self.obj_mem.add_element(s_id, embed, sup[0], sup[1], True, pred)

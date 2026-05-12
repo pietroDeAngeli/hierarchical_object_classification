@@ -63,6 +63,13 @@ def split_fixed_samples(samples, test_size=0, train_size=None, seed=0):
 		raise ValueError("train_size must be >= 0")
 
 	total = len(samples)
+
+	# If test_size is a fraction (0 < test_size < 1), convert to absolute count
+	if 0 < test_size < 1:
+		test_size = int(round(test_size * total))
+	else:
+		test_size = int(test_size)
+
 	if test_size > total:
 		raise ValueError("test_size ({}) is larger than available samples ({})".format(test_size, total))
 
@@ -300,8 +307,8 @@ if __name__ == "__main__":
 						help="JSON file with object memory args (must include evm_args)")
 	parser.add_argument("--output", default=None, type=str,
 						help="optional output path for a small initialization summary")
-	parser.add_argument("--test-size", default=0, type=int,
-						help="fixed number of examples to reserve for test set")
+	parser.add_argument("--test-size", default=0, type=float,
+						help="number of test examples (>=1) or fraction of total (0<v<1, e.g. 0.15 for 15%%)")
 	parser.add_argument("--train-size", default=None, type=int,
 						help="fixed number of train examples after test split (default: all remaining)")
 	parser.add_argument("--seed", default=0, type=int,

@@ -47,12 +47,14 @@ def _batched(seq: Sequence[dict], batch_size: int):
 def train_classwise_evm(train_samples: Sequence[dict], evm_args: dict, batch_size: int = 64):
     grouped = _group_by_target(train_samples)
     classes = sorted(grouped.keys())
+    logging.info("Training classwise EVM: %d classes, %d total samples, batch_size=%d",
+                 len(classes), len(train_samples), batch_size)
 
     if len(classes) < 2:
         raise ValueError("At least 2 classes are required for classwise one-vs-rest training")
 
     models = {}
-    for cls_name in classes:
+    for cls_idx, cls_name in enumerate(classes, 1):
         pos_samples = grouped[cls_name]
         neg_samples = []
         for other_cls in classes:
@@ -73,7 +75,10 @@ def train_classwise_evm(train_samples: Sequence[dict], evm_args: dict, batch_siz
             seen += len(batch)
 
         models[cls_name] = cls_model
+        logging.info("  [%d/%d] class '%s': %d pos, %d neg samples",
+                     cls_idx, len(classes), cls_name, len(pos_samples), len(neg_samples))
 
+    logging.info("Training complete: %d class models built", len(models))
     return models
 
 
@@ -101,12 +106,15 @@ def predict_with_classwise_evm(models: Dict[object, evm.EVM], emb: np.ndarray):
 def evaluate_classwise_evm(models, test_samples):
     true_labels = []
     pred_labels = []
+    logging.info("Evaluating on %d test samples...", len(test_samples))
 
-    for sample in test_samples:
+    for i, sample in enumerate(test_samples, 1):
         emb = init_h._load_embedding(sample["path"])
         pred = predict_with_classwise_evm(models, emb)
         true_labels.append(sample["target"])
         pred_labels.append(pred)
+        if i % 100 == 0 or i == len(test_samples):
+            logging.info("  evaluated %d/%d samples", i, len(test_samples))
 
     return rec_eval.compute_eval_metrics(true_labels, pred_labels, tree=None)
 
@@ -123,18 +131,21 @@ def _save_model(models, path_like):
 
 
 def main(cmdline):
+    logging.info("Loading obj-mem-args from %s", cmdline.obj_mem_args)
     obj_mem_args = init_h._load_obj_mem_args(cmdline.obj_mem_args, descriptor_path=cmdline.descriptor)
     evm_args = obj_mem_args.get("evm_args")
     if not isinstance(evm_args, dict):
         raise ValueError("Could not find 'evm_args' in --obj-mem-args payload")
 
     samples = init_h.build_samples_from_descriptor(cmdline.descriptor)
+    logging.info("Loaded %d total samples from descriptor", len(samples))
     train_samples, test_samples = init_h.split_fixed_samples(
         samples,
         test_size=cmdline.test_size,
         train_size=cmdline.train_size,
         seed=cmdline.seed,
     )
+    logging.info("Split: %d train, %d test (seed=%d)", len(train_samples), len(test_samples), cmdline.seed)
 
     if len(train_samples) == 0:
         raise ValueError("No train samples available after split")
@@ -175,7 +186,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--output", default=None, type=str, help="optional output json summary path")
     parser.add_argument("--model-output", default=None, type=str, help="optional serialized model output (.lz4)")
-    parser.add_argument("--test-size", default=0, type=int, help="fixed number of samples reserved for test")
+    parser.add_argument("--test-size", default=0, type=float, help="number of test samples (>=1) or fraction of total (0<v<1, e.g. 0.15 for 15%%)")
     parser.add_argument(
         "--train-size",
         default=None,

@@ -20,8 +20,8 @@ load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-DEFAULT_MODEL = "facebook/dinov2-small"
-DEFAULT_BATCH_SIZE = 32
+DEFAULT_MODEL = "facebook/dinov3-vit7b16-pretrain-lvd1689m"
+DEFAULT_BATCH_SIZE = 100
 
 
 def get_all_images(dataset_dir, descriptor_path=None):

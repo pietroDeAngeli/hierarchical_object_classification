@@ -37,6 +37,13 @@ def _split_descriptor_fixed(descriptor, test_size, seed):
     total = len(entries)
     if test_size < 0:
         raise ValueError("test_size must be >= 0")
+
+    # If test_size is a fraction (0 < test_size < 1), convert to absolute count
+    if 0 < test_size < 1:
+        test_size = int(round(test_size * total))
+    else:
+        test_size = int(test_size)
+
     if test_size > total:
         raise ValueError("test_size ({}) is larger than available samples ({})".format(test_size, total))
 
@@ -173,8 +180,8 @@ if __name__ == '__main__':
                         help="path containing the json to use")
     parser.add_argument("--results", type=str, default=None,
                         help="output file")
-    parser.add_argument("--test-size", type=int, default=0,
-                        help="fixed number of descriptor samples to reserve for test (excluded from training)")
+    parser.add_argument("--test-size", type=float, default=0,
+                        help="number of test samples (>=1) or fraction of total (0<v<1, e.g. 0.15 for 15%%)")
     parser.add_argument("--test-seed", type=int, default=None,
                         help="seed for fixed test split (default: dataset split_seed from input json)")
     parser.add_argument("--test-output", type=str, default=None,

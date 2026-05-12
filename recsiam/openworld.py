@@ -4,6 +4,7 @@ import logging
 import itertools
 import numpy as np
 import torch
+import networkx as nx
 from .supervision import supervisor_factory, get_supervision_stat
 from . import utils
 from . import eval as rec_eval
@@ -125,6 +126,10 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
         session_thr.append(thr)
         session_hyer.append(list(agent.obj_mem.T.edges))
 
+    # Flush any pending batched EVM updates before evaluation
+    if hasattr(agent.obj_mem, 'finalize_updates'):
+        agent.obj_mem.finalize_updates()
+
     # test
     if do_eval:
         eval_true = []
@@ -156,10 +161,23 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
                 if emb.ndim == 1:
                     emb = emb[None, :]
 
-                pred = agent.predict(emb, embedded=True)[0][0]
+                # Force leaf-level prediction during eval: temporarily override
+                # force="top" (which would stop at the root) so the traversal
+                # reaches a leaf node with a resolvable class label.
+                orig_force = agent.obj_mem.force
+                agent.obj_mem.force = None
+                leaf_res = agent.obj_mem.predict(emb, 0.0)
+                agent.obj_mem.force = orig_force
+                pred = leaf_res[0][0]
 
                 eval_true.append(eval_fds.data[int(obj_id[b])]["id"])
-                eval_hat.append(s_id_to_class_name.get(pred, None))
+                if pred in s_id_to_class_name:
+                    # pred is an integer s_id added during the session
+                    resolved = s_id_to_class_name[pred]
+                else:
+                    # pred is already a class-name node from the taxonomy hierarchy
+                    resolved = pred
+                eval_hat.append(resolved)
 
             for i, (m, m_a) in enumerate(zip(metadata, meta_args)):
                 meta = eval_seqs.dataset.get_metadata(m, ds_ind, **m_a)
@@ -174,12 +192,18 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
         else:
             eval_class = np.array([], dtype=object)
             eval_pred = np.array([], dtype=object)
-        eval_metrics = rec_eval.compute_eval_metrics(eval_class, eval_pred, agent.obj_mem.T)
-
         T = agent.obj_mem.T
         total_nodes = len(T.nodes)
         leaf_nodes = sum(1 for n in T.nodes if T.out_degree(n) == 0)
-        logger.info("Tree at end of eval: total_nodes=%d leaf_nodes=%d", total_nodes, leaf_nodes)
+
+        # Relabel tree nodes from integer s_ids to class name strings so that
+        # geodesic distance can be computed in the same label space as eval_class/eval_pred.
+        node_to_classname = {
+            n: (s_id_to_class_name[n] if n in s_id_to_class_name else n)
+            for n in T.nodes
+        }
+        T_named = nx.relabel_nodes(T, node_to_classname)
+        eval_metrics = rec_eval.compute_eval_metrics(eval_class, eval_pred, T_named)
     else:
         eval_class = np.array([], dtype=object)
         eval_pred = np.array([], dtype=object)

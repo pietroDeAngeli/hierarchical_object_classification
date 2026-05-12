@@ -66,7 +66,8 @@ class ObjectsMemory(object):
                  rng=np.random.RandomState(),
                  bootstrap=2,
                  force=None,
-                 predict_policy="tree"):
+                 predict_policy="tree",
+                 evm_batch_size=1):
         self.evm_args = evm_args
 
         self.M = np.array([])
@@ -87,6 +88,9 @@ class ObjectsMemory(object):
         self.rng = rng
         self.bootstrap = bootstrap
         self.leaves = 0
+        self.evm_batch_size = max(1, int(evm_batch_size))
+        self._pending_batch_count = 0
+        self._pending_batch_leaves = set()
         self.logger = logging.getLogger("recsiam.memory.ObjectsMemory")
 
 
@@ -104,7 +108,14 @@ class ObjectsMemory(object):
         is_leaf = utils.is_leaf(self.T, target) if target else True
         new_id_node = target
 
-        if not is_leaf or new_genus or len(self.T) == 0:
+        # Structural changes (new node, new genus, new root) require EVMs
+        # to be up-to-date because insert_genus copies and filters the
+        # parent's EVM.  Flush any pending batched updates first.
+        structural_change = not is_leaf or new_genus or len(self.T) == 0
+        if structural_change and self._pending_batch_count > 0:
+            self._flush_batch()
+
+        if structural_change:
             self.T.add_node(new_id, elem=set(), uelem=set(), cls=None)
             self.leaves += 1
             new_id_node = new_id
@@ -138,10 +149,42 @@ class ObjectsMemory(object):
         if self.leaves == self.bootstrap:
             self.recompute_all_update_evm()
         elif self.leaves > self.bootstrap:
-            self.update_evm(new_id_node, new_data, pred)
+            if structural_change or self.evm_batch_size <= 1:
+                # Structural change: must update immediately
+                self.update_evm(new_id_node, new_data, pred)
+            else:
+                # Adding data to existing leaf: safe to batch
+                self._pending_batch_count += 1
+                self._pending_batch_leaves.add(new_id_node)
+                if self._pending_batch_count >= self.evm_batch_size:
+                    self._flush_batch()
 
     def new_evm(self):
         return evm.EVM(**self.evm_args)
+
+    def _flush_batch(self):
+        """Flush pending batched EVM updates."""
+        if self._pending_batch_count == 0:
+            return
+        if self.update_policy == "recompute":
+            # Recompute all ancestor nodes of affected leaves
+            dirty_nodes = set()
+            for leaf in self._pending_batch_leaves:
+                if leaf in self.T.nodes:
+                    for anc in utils.gen_parents(leaf, self.T):
+                        dirty_nodes.add(anc)
+            for node in dirty_nodes:
+                if not utils.is_leaf(self.T, node):
+                    self.recompute_evm_for_node(node)
+        else:
+            # For non-recompute policies, fall back to full recompute
+            self.recompute_all_update_evm()
+        self._pending_batch_count = 0
+        self._pending_batch_leaves = set()
+
+    def finalize_updates(self):
+        """Flush any pending batched EVM updates."""
+        self._flush_batch()
 
     def update_evm(self, target_id, target_data, pred):
         if self. update_policy == "recompute":
