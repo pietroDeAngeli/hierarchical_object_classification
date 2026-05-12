@@ -4,13 +4,21 @@
 
 # Directories
 results*
-dataset*
+dataset/*
+val2017/*
+train2017/*
+outputs/*
 
 # Files
 *.sbatch
 *.log
 .env
 .gitignore
+*.zip
+*.sbatch
+*.log
+*.sh
+*.json
 
 # swap files
 *.swp

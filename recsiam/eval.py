@@ -16,6 +16,15 @@ def majority_vote(labels: np.ndarray):
 def compute_eval_metrics(true_labels, pred_labels, tree=None):
     logger = logging.getLogger("recsiam.eval.compute_eval_metrics")
 
+    tree_stats = _hierarchy_stats(tree)
+    gt_tree_stats = _hierarchy_stats(gt_tree) if gt_tree is not None else {
+        "height": None,
+        "avg_depth": None,
+        "branching_factor_min": None,
+        "branching_factor_max": None,
+        "branching_factor_avg": None,
+    }
+
     if len(true_labels) == 0:
         return {
             "accuracy": None,
