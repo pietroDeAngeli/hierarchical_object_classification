@@ -135,9 +135,34 @@ def main(cmdline):
     if cmdline.eval_test and cmdline.test_size > 0:
         eval_res = results[1]
         # eval_res["metrics"] is an array of dicts, one per experiment run
-        metrics_list = eval_res["metrics"].tolist()
+        metrics_raw = eval_res["metrics"]
+
+        # Robustly extract list of dicts from possibly nested numpy arrays
+        metrics_list = []
+        for m in metrics_raw:
+            if hasattr(m, 'item'):
+                m = m.item()
+            if isinstance(m, np.ndarray) and m.ndim == 0:
+                m = m.item()
+            metrics_list.append(m)
+
         agg_metrics = {}
-        for key in ["accuracy", "precision", "f1", "mean_geodesic_distance"]:
+        for key in [
+            "accuracy",
+            "precision",
+            "f1",
+            "mean_geodesic_distance",
+            "tree_height",
+            "tree_avg_depth",
+            "tree_branching_factor_min",
+            "tree_branching_factor_max",
+            "tree_branching_factor_avg",
+            "gt_tree_height",
+            "gt_tree_avg_depth",
+            "gt_tree_branching_factor_min",
+            "gt_tree_branching_factor_max",
+            "gt_tree_branching_factor_avg",
+        ]:
             vals = [m[key] for m in metrics_list if isinstance(m, dict) and m.get(key) is not None]
             agg_metrics[key] = float(np.mean(vals)) if vals else None
         for key in ["total_nodes", "leaf_nodes"]:

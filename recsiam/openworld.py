@@ -203,7 +203,8 @@ def do_experiment(agent, session_seqs, eval_seqs, metadata=[], meta_args=[{}],
             for n in T.nodes
         }
         T_named = nx.relabel_nodes(T, node_to_classname)
-        eval_metrics = rec_eval.compute_eval_metrics(eval_class, eval_pred, T_named)
+        gt_tree = getattr(agent.supervisor, "knowledge", None)
+        eval_metrics = rec_eval.compute_eval_metrics(eval_class, eval_pred, T_named, gt_tree=gt_tree)
     else:
         eval_class = np.array([], dtype=object)
         eval_pred = np.array([], dtype=object)

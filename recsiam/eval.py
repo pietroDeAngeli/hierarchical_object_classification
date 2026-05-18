@@ -13,8 +13,94 @@ def majority_vote(labels: np.ndarray):
     return uniq[np.argmax(cnt)]
 
 
-def compute_eval_metrics(true_labels, pred_labels, tree=None):
+def _hierarchy_stats(tree):
+    if tree is None or len(tree.nodes) == 0:
+        return {
+            "height": None,
+            "avg_depth": None,
+            "branching_factor_min": None,
+            "branching_factor_max": None,
+            "branching_factor_avg": None,
+        }
+
+    if hasattr(tree, "is_directed") and tree.is_directed():
+        roots = [n for n in tree.nodes if tree.in_degree(n) == 0]
+        if len(roots) == 0:
+            roots = [next(iter(tree.nodes))]
+
+        depths = {}
+        for root in roots:
+            for node, dist in nx.single_source_shortest_path_length(tree, root).items():
+                if node not in depths or dist < depths[node]:
+                    depths[node] = int(dist)
+
+        if len(depths) < len(tree.nodes):
+            # Fallback for malformed/disconnected directed structures.
+            undir = tree.to_undirected()
+            missing = [n for n in tree.nodes if n not in depths]
+            for node in missing:
+                min_d = None
+                for root in roots:
+                    try:
+                        d = nx.shortest_path_length(undir, source=root, target=node)
+                    except Exception:
+                        continue
+                    if min_d is None or d < min_d:
+                        min_d = d
+                depths[node] = int(min_d) if min_d is not None else 0
+
+        depth_values = np.asarray(list(depths.values()), dtype=float)
+
+        branching = []
+        for node in tree.nodes:
+            children = list(tree.successors(node))
+            if len(children) == 0:
+                continue
+
+            # Exclude parents whose children are all leaves (last branching level).
+            if all(tree.out_degree(child) == 0 for child in children):
+                continue
+
+            branching.append(float(len(children)))
+    else:
+        root = next(iter(tree.nodes))
+        depth_map = nx.single_source_shortest_path_length(tree, root)
+        depth_values = np.asarray(list(depth_map.values()), dtype=float)
+
+        branching = []
+        for node in tree.nodes:
+            deg = tree.degree(node)
+            if deg == 0:
+                continue
+            # Undirected fallback: approximate children as neighbors away from root.
+            node_depth = depth_map.get(node, 0)
+            children = [nbr for nbr in tree.neighbors(node) if depth_map.get(nbr, node_depth) > node_depth]
+            if len(children) == 0:
+                continue
+            if all(tree.degree(child) <= 1 for child in children):
+                continue
+            branching.append(float(len(children)))
+
+    return {
+        "height": float(np.max(depth_values)) if depth_values.size > 0 else None,
+        "avg_depth": float(np.mean(depth_values)) if depth_values.size > 0 else None,
+        "branching_factor_min": float(np.min(branching)) if len(branching) > 0 else None,
+        "branching_factor_max": float(np.max(branching)) if len(branching) > 0 else None,
+        "branching_factor_avg": float(np.mean(branching)) if len(branching) > 0 else None,
+    }
+
+
+def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
     logger = logging.getLogger("recsiam.eval.compute_eval_metrics")
+
+    tree_stats = _hierarchy_stats(tree)
+    gt_tree_stats = _hierarchy_stats(gt_tree) if gt_tree is not None else {
+        "height": None,
+        "avg_depth": None,
+        "branching_factor_min": None,
+        "branching_factor_max": None,
+        "branching_factor_avg": None,
+    }
 
     if len(true_labels) == 0:
         return {
@@ -22,6 +108,16 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None):
             "precision": None,
             "f1": None,
             "mean_geodesic_distance": None,
+            "tree_height": tree_stats["height"],
+            "tree_avg_depth": tree_stats["avg_depth"],
+            "tree_branching_factor_min": tree_stats["branching_factor_min"],
+            "tree_branching_factor_max": tree_stats["branching_factor_max"],
+            "tree_branching_factor_avg": tree_stats["branching_factor_avg"],
+            "gt_tree_height": gt_tree_stats["height"],
+            "gt_tree_avg_depth": gt_tree_stats["avg_depth"],
+            "gt_tree_branching_factor_min": gt_tree_stats["branching_factor_min"],
+            "gt_tree_branching_factor_max": gt_tree_stats["branching_factor_max"],
+            "gt_tree_branching_factor_avg": gt_tree_stats["branching_factor_avg"],
         }
 
     true_labels = np.asarray(true_labels, dtype=object)
@@ -95,6 +191,16 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None):
         "precision": precision,
         "f1": f1,
         "mean_geodesic_distance": mean_geo,
+        "tree_height": tree_stats["height"],
+        "tree_avg_depth": tree_stats["avg_depth"],
+        "tree_branching_factor_min": tree_stats["branching_factor_min"],
+        "tree_branching_factor_max": tree_stats["branching_factor_max"],
+        "tree_branching_factor_avg": tree_stats["branching_factor_avg"],
+        "gt_tree_height": gt_tree_stats["height"],
+        "gt_tree_avg_depth": gt_tree_stats["avg_depth"],
+        "gt_tree_branching_factor_min": gt_tree_stats["branching_factor_min"],
+        "gt_tree_branching_factor_max": gt_tree_stats["branching_factor_max"],
+        "gt_tree_branching_factor_avg": gt_tree_stats["branching_factor_avg"],
     }
 
 
