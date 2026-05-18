@@ -163,6 +163,11 @@ def run_ow_exp(params, workers, quiet=False, torch_threads=1):
         torch.set_num_threads(torch_threads)
 
     pool = Parallel(n_jobs=workers, batch_size=1)
+    
+    #n_exp = params["n_exp"] if isinstance(params["n_exp"], int) else params["n_exp"][1] - params["n_exp"][0]
+    #effective_workers = 1 if n_exp == 1 else workers
+    #pool = Parallel(n_jobs=effective_workers, batch_size=1)
+    
     keys = ["metadata", "meta_args"]
     args_exp = {k: params["dataset"][k] for k in keys}
 

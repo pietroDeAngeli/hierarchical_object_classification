@@ -2,7 +2,7 @@
 set -euo pipefail
 
 selected_partition="val"
-# selected_partition="train"
+#selected_partition="train"
 
 
 wordnet_hierarchy="9k.tree"
@@ -133,8 +133,8 @@ if [ -n "$(find dataset/ -type f \( -name '*.jpg' -o -name '*.png' \) -print -qu
     # To keep original images, add the flag --keep-images below
     python scripts/embed_dataset.py \
         dataset/ \
-        --model "facebook/dinov2-base" \
-        --batch-size 32 \
+        --model "facebook/dinov3-vitb16-pretrain-lvd1689m" \
+        --batch-size 30 \
         --descriptor descriptor.json
     echo "Embeddings calculation completed."
 else
@@ -142,4 +142,7 @@ else
 fi
 
 mv metadata.json dataset/
+rm -rf $annotations_dir
+rm $wordnet_hierarchy $wordnet_labels $wordnet_map $coco_names
+
 find dataset -name "*.jpg" -type f -delete

@@ -168,7 +168,7 @@ def create_embedded_descriptor(descriptor_path):
         print(f"Removed {removed_paths} paths without computed embeddings.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Pre-compute DINOv2 embeddings for a dataset folder.")
+    parser = argparse.ArgumentParser(description="Pre-compute DINOv3 embeddings for a dataset folder.")
     parser.add_argument("dataset_dir", type=str, nargs='?', default='dataset',
                         help="Root dataset directory (structure: dataset/<class>/<images>)")
     parser.add_argument("--model", default=DEFAULT_MODEL,

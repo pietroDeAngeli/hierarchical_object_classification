@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 load_dotenv()
 _HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Public DINOv2-small model (non-gated, matches embedding_preprocess.py)
-_DEFAULT_MODEL = "facebook/dinov2-small"
+# Public DINOv3 model (non-gated, matches embedding_preprocess.py)
+_DEFAULT_MODEL = "facebook/dinov3-vit7b16-pretrain-lvd1689m"
 
 
 class DINOEmbedding(nn.Module):
