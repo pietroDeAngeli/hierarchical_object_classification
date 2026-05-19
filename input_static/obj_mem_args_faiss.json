@@ -1,0 +1,12 @@
+{
+  "evm_args": {
+    "cover_threshold": 0.5,
+    "margin_scale": 1.0,
+    "num_to_fuse": 1,
+    "reduce": true,
+    "tailsize": 25
+  },
+  "update_policy": "recompute",
+  "negative_selection": "faiss_siblings",
+  "neg_size": 25
+}
