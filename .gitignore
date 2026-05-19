@@ -10,15 +10,11 @@ train2017/*
 outputs/*
 
 # Files
-*.sbatch
+#*.sbatch
 *.log
 .env
-.gitignore
 *.zip
-*.sbatch
-*.log
-*.sh
-*.json
+descriptor.json
 
 # swap files
 *.swp
