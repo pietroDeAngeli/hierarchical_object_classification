@@ -10,6 +10,8 @@ from . import utils
 from .utils import a_app, t_app
 from . import evm
 
+
+
 _set_fields = ("elem", "uelem")
 
 
@@ -67,8 +69,14 @@ class ObjectsMemory(object):
                  bootstrap=2,
                  force=None,
                  predict_policy="tree",
-                 evm_batch_size=1):
+                 evm_batch_size=1,
+                 neg_size=None,
+                 negative_selection="random"):
+        assert negative_selection in ("random", "faiss_siblings"), \
+            f"negative_selection must be 'random' or 'faiss_siblings', got {negative_selection!r}"
         self.evm_args = evm_args
+        self.neg_size = neg_size
+        self.negative_selection = negative_selection
 
         self.M = np.array([])
 
@@ -78,6 +86,7 @@ class ObjectsMemory(object):
         self.sup = {}
         self.elem_ids = np.array([], dtype=object)
         self.elem_node_ids = np.array([], dtype=object)
+        self._node_to_indices = {}  # leaf_node_id -> list of sample indices into self.M
         assert force in ("top", "bot", None)
         self.force = force
 
@@ -92,7 +101,6 @@ class ObjectsMemory(object):
         self._pending_batch_count = 0
         self._pending_batch_leaves = set()
         self.logger = logging.getLogger("recsiam.memory.ObjectsMemory")
-
 
     def __len__(self):
         return len(self.T.nodes)
@@ -144,6 +152,13 @@ class ObjectsMemory(object):
                                    np.tile(new_id_node, new_data.shape[0]),
                                    ndim=1).astype(object)
 
+        # Update reverse index: leaf_node_id -> sample indices
+        n_new = new_data.shape[0]
+        start_idx = len(self.M) - n_new
+        if new_id_node not in self._node_to_indices:
+            self._node_to_indices[new_id_node] = []
+        self._node_to_indices[new_id_node].extend(range(start_idx, start_idx + n_new))
+
         self.sup[new_id] = supervised
 
         if self.leaves == self.bootstrap:
@@ -160,7 +175,10 @@ class ObjectsMemory(object):
                     self._flush_batch()
 
     def new_evm(self):
-        return evm.EVM(**self.evm_args)
+        return evm.EVM(**self.evm_args,
+                       neg_size=self.neg_size,
+                       negative_selection=self.negative_selection,
+                       rng=self.rng)
 
     def _flush_batch(self):
         """Flush pending batched EVM updates."""
@@ -258,26 +276,68 @@ class ObjectsMemory(object):
             cls = self.T.nodes[parent]["cls"]
             cls.fit(target_data, np.tile(child, len(target_data)))
 
+    def _leaves_under(self, node):
+        """Return the set of leaf descendants of *node* (or {node} if already a leaf)."""
+        if utils.is_leaf(self.T, node):
+            return {node}
+        return {n for n in nx.descendants(self.T, node) if utils.is_leaf(self.T, n)}
+
     def recompute_evm_for_node(self, node):
+        if not getattr(self, "_logged_selection_mode", False):
+            self.logger.info(
+                "negative_selection=%r  neg_size=%r",
+                self.negative_selection,
+                self.neg_size,
+            )
+            self._logged_selection_mode = True
 
         childs = list(self.T.succ[node])
-        labels = np.empty(self.elem_ids.size, dtype=object)
-        data_mask = np.zeros(self.elem_ids.size, dtype=np.bool_)
 
+        child_to_global_idxs = {}
         for c in childs:
-            c_elems = self.T.nodes[c]["elem"] | self.T.nodes[c]["uelem"]
-            c_mask = utils.arrayinset(self.elem_node_ids, c_elems)
+            idxs = []
+            for leaf_id in self._leaves_under(c):
+                idxs.extend(self._node_to_indices.get(leaf_id, []))
+            child_to_global_idxs[c] = np.array(idxs, dtype=np.intp)
 
-            assert not np.any(data_mask & c_mask)
-            data_mask |= c_mask
-            labels[c_mask] = c
+        populated_childs = [c for c, idxs in child_to_global_idxs.items() if len(idxs) > 0]
 
-        labels = labels[data_mask]
-        points = self.M[data_mask]
-        negatives = self.M[~data_mask]
+        if len(populated_childs) < 2:
+            self.T.nodes[node]["cls"] = None
+            self.logger.debug(
+                "Skipping EVM fit for node %s: populated_childs=%d",
+                node,
+                len(populated_childs),
+            )
+            return
 
-        self.T.nodes[node]["cls"] = self.new_evm()
-        self.T.nodes[node]["cls"].fit(points, labels, neg_X=negatives)
+        cls = self.new_evm()
+
+        for c in populated_childs:
+            pos_idxs = child_to_global_idxs[c]
+
+            sibling_parts = [
+                child_to_global_idxs[s]
+                for s in populated_childs
+                if s != c and len(child_to_global_idxs[s]) > 0
+            ]
+
+            if not sibling_parts:
+                continue
+
+            sibling_idxs = np.concatenate(sibling_parts).astype(np.intp)
+
+            pos_X = self.M[pos_idxs]
+            neg_X = self.M[sibling_idxs]
+            y = np.tile(c, len(pos_X)).astype(object)
+
+            cls.fit(pos_X, y, neg_X=neg_X)
+
+        if len(cls.y) == 0:
+            self.T.nodes[node]["cls"] = None
+            return
+
+        self.T.nodes[node]["cls"] = cls
 
     def recompute_all_update_evm(self):
         for node in self.T.nodes:
@@ -410,7 +470,8 @@ class StaticHierarchyMemory(ObjectsMemory):
 
     def __init__(self, hierarchy, evm_args, update_policy="recompute",
                  rng=np.random.RandomState(), bootstrap=2, force=None,
-                 predict_policy="tree", evm_batch_size=1):
+                 predict_policy="tree", evm_batch_size=1, neg_size=None,
+                 negative_selection="random"):
         if evm_batch_size < 1:
             raise ValueError("evm_batch_size must be >= 1")
         super().__init__(evm_args=evm_args,
@@ -418,7 +479,9 @@ class StaticHierarchyMemory(ObjectsMemory):
                          rng=rng,
                          bootstrap=bootstrap,
                          force=force,
-                         predict_policy=predict_policy)
+                         predict_policy=predict_policy,
+                         neg_size=neg_size,
+                         negative_selection=negative_selection)
         self.T = _build_fixed_tree(hierarchy)
         self.evm_batch_size = int(evm_batch_size)
         self._pending_updates = []
@@ -483,6 +546,13 @@ class StaticHierarchyMemory(ObjectsMemory):
                                          ndim=1).astype(object)
         self.sup[new_id] = supervised
 
+        # Maintain reverse index
+        n_new = new_data.shape[0]
+        start_idx = len(self.M) - n_new
+        if target not in self._node_to_indices:
+            self._node_to_indices[target] = []
+        self._node_to_indices[target].extend(range(start_idx, start_idx + n_new))
+
         self._pending_update_count += 1
         if self.update_policy == "recompute":
             self._pending_leaf_updates.add(target)
@@ -495,45 +565,6 @@ class StaticHierarchyMemory(ObjectsMemory):
         """Flush any pending batched EVM updates."""
         if self._pending_update_count > 0:
             self._flush_pending_updates()
-
-    def recompute_evm_for_node(self, node):
-
-        childs = list(self.T.succ[node])
-        labels = np.empty(self.elem_ids.size, dtype=object)
-        data_mask = np.zeros(self.elem_ids.size, dtype=np.bool_)
-
-        for c in childs:
-            c_leaves = list(self._leaves_under(c))
-            c_mask = np.isin(self.elem_node_ids, c_leaves)
-
-            assert not np.any(data_mask & c_mask)
-            data_mask |= c_mask
-            labels[c_mask] = c
-
-        labels = labels[data_mask]
-        points = self.M[data_mask]
-        negatives = self.M[~data_mask]
-
-        has_negatives = (len(negatives) > 0) or (np.unique(labels).size > 1)
-        if points.size == 0 or not has_negatives:
-            self.T.nodes[node]["cls"] = None
-            self.logger.debug(
-                "Skipping EVM fit for node %s (points=%d, negatives=%d, unique_labels=%d)",
-                node,
-                len(points),
-                len(negatives),
-                np.unique(labels).size if labels.size > 0 else 0,
-            )
-            return
-
-        self.T.nodes[node]["cls"] = self.new_evm()
-        self.T.nodes[node]["cls"].fit(points, labels, neg_X=negatives)
-
-    def _leaves_under(self, node):
-        """Return the set of leaf descendants of *node* (or {node} if already a leaf)."""
-        if utils.is_leaf(self.T, node):
-            return {node}
-        return {n for n in nx.descendants(self.T, node) if utils.is_leaf(self.T, n)}
 
     def affected_internal_nodes_from_leaves(self, leaf_nodes):
         dirty_nodes = set()
