@@ -3,6 +3,7 @@ import libmr
 import sklearn.metrics.pairwise
 import itertools as it
 import logging
+import faiss as _faiss
 from .utils import empty_cat
 
 
@@ -185,7 +186,10 @@ class EVM():
                  num_to_fuse=1,
                  tailsize=50,
                  cover_threshold=0.5,
-                 reduce=True):
+                 reduce=True,
+                 neg_size=None,
+                 negative_selection="random",
+                 rng=None):
 
         self.evt_indices = evt_indices
         self.margin_scale = margin_scale
@@ -194,6 +198,9 @@ class EVM():
         self.cover_threshold = cover_threshold
         self.reduce = bool(reduce)
         self.cnt = 0
+        self.neg_size = neg_size
+        self.negative_selection = negative_selection
+        self.rng = rng if rng is not None else np.random.RandomState()
 
         self.weibulls = _EMPTY
         self.y = _EMPTY
@@ -208,7 +215,9 @@ class EVM():
                 "num_to_fuse": self.num_to_fuse,
                 "tailsize": self.tailsize,
                 "cover_threshold": self.cover_threshold,
-                "reduce": self.reduce
+                "reduce": self.reduce,
+                "neg_size": self.neg_size,
+                "negative_selection": self.negative_selection,
                }
 
     def set_params(self, **parameters):
@@ -222,7 +231,10 @@ class EVM():
                   num_to_fuse=self.num_to_fuse,
                   tailsize=self.tailsize,
                   cover_threshold=self.cover_threshold,
-                  reduce=self.reduce)
+                  reduce=self.reduce,
+                  neg_size=self.neg_size,
+                  negative_selection=self.negative_selection,
+                  rng=self.rng)
 
         new.weibulls = self.weibulls.copy()
         new.X = self.X.copy()
@@ -263,7 +275,38 @@ class EVM():
 
         return new_d_mat
 
+    def _subsample_negatives_random(self, neg_X):
+        """Randomly select a global subset of at most neg_size negatives.
+        The same subset is reused for all positives in the current fit() call."""
+        k = min(self.neg_size, len(neg_X))
+        if k >= len(neg_X):
+            return neg_X
+        idx = self.rng.choice(len(neg_X), size=k, replace=False)
+        return neg_X[np.sort(idx)]
+
+    def _compute_neg_d_faiss(self, X, neg_X):
+        """For each positive x_i in X find the neg_size nearest negatives in neg_X
+        using FAISS and return a per-row distance matrix neg_d of shape (len(X), k)
+        containing L2 distances.  Each row is independent, so different positives
+        can have different hard negatives."""
+        k = min(self.neg_size, len(neg_X))
+        vecs = np.ascontiguousarray(neg_X, dtype=np.float32)
+        tmp_index = _faiss.IndexFlatL2(vecs.shape[1])
+        tmp_index.add(vecs)
+        qvecs = np.ascontiguousarray(X, dtype=np.float32)
+        D_sq, _ = tmp_index.search(qvecs, k)       # squared L2, shape (len(X), k)
+        return np.sqrt(np.maximum(D_sq, 0.0))       # L2 distances, shape (len(X), k)
+
     def fit(self, X, y, neg_X=_EMPTY, neg_d=None):
+        # Negative subsampling: only when neg_size is set and neg_X is provided.
+        if neg_d is None and len(neg_X) > 0 and self.neg_size is not None:
+            if self.negative_selection == "faiss_siblings":
+                # Per-positive: each x_i gets its own k nearest negatives.
+                neg_d = self._compute_neg_d_faiss(X, neg_X)
+                neg_X = _EMPTY
+            else:
+                # Random: one global subset shared by all positives.
+                neg_X = self._subsample_negatives_random(neg_X)
 
         self.cnt += y.size
         new_X = empty_cat((self.X, X))
@@ -274,8 +317,9 @@ class EVM():
             labels = empty_cat((new_y, np.tile(None, len(neg_X)).astype(object)))
         else:
             assert len(X) == neg_d.shape[0]
-            d_mat = self.build_dmat(X, np.zeros((neg_d.shape[1],
-                                                 self.X.shape[1])))
+            # Use X's dimension as fallback when self.X is still empty.
+            dim = self.X.shape[1] if len(self.X) > 0 else X.shape[1]
+            d_mat = self.build_dmat(X, np.zeros((neg_d.shape[1], dim)))
             d_mat[:len(self.X), len(new_X):] = np.inf
             d_mat[len(self.X):, len(new_X):] = neg_d
 
