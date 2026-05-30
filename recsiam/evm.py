@@ -1,10 +1,12 @@
 import numpy as np
 import libmr
-import sklearn.metrics.pairwise
 import itertools as it
 import logging
 import faiss as _faiss
+import torch
 from .utils import empty_cat
+
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 _EMPTY = np.array(())
@@ -16,13 +18,9 @@ def euclidean_cdist(X, Y):
             X = X[None, :]
         if Y.ndim == 1:
             Y = Y[None, :]
-        result = sklearn.metrics.pairwise.pairwise_distances(X, Y,
-                                                           metric="euclidean",
-                                                           n_jobs=1)
-#        sq = np.squeeze(result)
-#        if sq.ndim == 0:
-#            sq = sq[None, ...]
-
+        xt = torch.as_tensor(X, dtype=torch.float32, device=_DEVICE)
+        yt = torch.as_tensor(Y, dtype=torch.float32, device=_DEVICE)
+        result = torch.cdist(xt, yt, p=2).cpu().numpy().astype(np.float64)
         return result
     else:
         return np.zeros(shape=(len(X), len(Y)))
@@ -32,9 +30,8 @@ def euclidean_pdist(X):
     if len(X) > 0:
         if X.ndim == 1:
             X = X[None, :]
-        return sklearn.metrics.pairwise.pairwise_distances(X,
-                                                           metric="euclidean",
-                                                           n_jobs=1)
+        xt = torch.as_tensor(X, dtype=torch.float32, device=_DEVICE)
+        return torch.cdist(xt, xt, p=2).cpu().numpy().astype(np.float64)
     else:
         return _EMPTY
 
@@ -276,26 +273,30 @@ class EVM():
         return new_d_mat
 
     def _subsample_negatives_random(self, neg_X):
-        """Randomly select a global subset of at most neg_size negatives.
+        """Randomly select a global subset of negatives.
+        neg_size is a fraction in (0, 1]: 1.0 uses all negatives.
         The same subset is reused for all positives in the current fit() call."""
-        k = min(self.neg_size, len(neg_X))
+        k = max(1, round(self.neg_size * len(neg_X)))
         if k >= len(neg_X):
             return neg_X
         idx = self.rng.choice(len(neg_X), size=k, replace=False)
         return neg_X[np.sort(idx)]
 
     def _compute_neg_d_faiss(self, X, neg_X):
-        """For each positive x_i in X find the neg_size nearest negatives in neg_X
-        using FAISS and return a per-row distance matrix neg_d of shape (len(X), k)
-        containing L2 distances.  Each row is independent, so different positives
-        can have different hard negatives."""
-        k = min(self.neg_size, len(neg_X))
-        vecs = np.ascontiguousarray(neg_X, dtype=np.float32)
-        tmp_index = _faiss.IndexFlatL2(vecs.shape[1])
-        tmp_index.add(vecs)
-        qvecs = np.ascontiguousarray(X, dtype=np.float32)
-        D_sq, _ = tmp_index.search(qvecs, k)       # squared L2, shape (len(X), k)
-        return np.sqrt(np.maximum(D_sq, 0.0))       # L2 distances, shape (len(X), k)
+        """For each positive x_i in X find the k nearest negatives in neg_X
+        using torch.cdist (GPU-accelerated when available) and return a
+        per-row distance matrix neg_d of shape (len(X), k) containing L2
+        distances.  Each row is independent, so different positives can have
+        different hard negatives.
+        neg_size is a fraction in (0, 1]: 1.0 uses all negatives."""
+        k = max(1, round(self.neg_size * len(neg_X)))
+        neg_t = torch.as_tensor(neg_X, dtype=torch.float32, device=_DEVICE)
+        q_t = torch.as_tensor(X, dtype=torch.float32, device=_DEVICE)
+        # full pairwise L2, shape (len(X), len(neg_X))
+        d_full = torch.cdist(q_t, neg_t, p=2)
+        # keep only the k smallest per row
+        d_topk, _ = torch.topk(d_full, k, dim=1, largest=False, sorted=True)
+        return d_topk.cpu().numpy().astype(np.float64)
 
     def fit(self, X, y, neg_X=_EMPTY, neg_d=None):
         # Negative subsampling: only when neg_size is set and neg_X is provided.
