@@ -14,6 +14,7 @@ from sklearn.preprocessing import LabelEncoder
 
 from . import eval as rec_eval
 from . import init_hierarchy as init_h
+from . import utils
 
 
 # ---------------------------------------------------------------------------
@@ -106,19 +107,19 @@ def train_logistic_head(
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_logistic_head(clf: LogisticRegression, le: LabelEncoder, test_samples: Sequence[dict]):
+def evaluate_logistic_head(clf: LogisticRegression, le: LabelEncoder, test_samples: Sequence[dict], gt_tree=None):
     logging.info("Loading embeddings for %d test samples...", len(test_samples))
     X_test, y_test = _load_split_embeddings(test_samples)
 
     if X_test.shape[0] == 0:
         logging.warning("No test samples to evaluate")
-        return rec_eval.compute_eval_metrics([], [], tree=None)
+        return rec_eval.compute_eval_metrics([], [], tree=None, gt_tree=gt_tree)
 
     y_pred_enc = clf.predict(X_test)
     y_pred = le.inverse_transform(y_pred_enc)
 
     logging.info("Evaluation complete")
-    return rec_eval.compute_eval_metrics(y_test.tolist(), y_pred.tolist(), tree=None)
+    return rec_eval.compute_eval_metrics(y_test.tolist(), y_pred.tolist(), tree=None, gt_tree=gt_tree)
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +178,17 @@ def main(cmdline):
         "seed": int(cmdline.seed),
     }
 
+    gt_tree = None
+    try:
+        _desc = utils.load_descriptor(cmdline.descriptor)
+        _hier = utils.hierarchy_from_descriptor(_desc)
+        gt_tree = utils.tree_from_list(_hier)
+        logging.info("Loaded GT hierarchy for geodesic distance (%d nodes)", len(gt_tree.nodes))
+    except Exception as exc:
+        logging.warning("Could not load GT hierarchy for geodesic distance: %s", exc)
+
     if cmdline.eval_test:
-        metrics = evaluate_logistic_head(clf, le, test_samples)
+        metrics = evaluate_logistic_head(clf, le, test_samples, gt_tree=gt_tree)
         summary["test_metrics"] = metrics
         logging.info("Test metrics: %s", metrics)
 

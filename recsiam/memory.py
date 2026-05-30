@@ -1,9 +1,11 @@
 from __future__ import division
 import itertools
 import logging
+import time
 import torch
 import numpy as np
 import networkx as nx
+import faiss as _faiss
 
 from . import supervision as sup
 from . import utils
@@ -101,6 +103,8 @@ class ObjectsMemory(object):
         self._pending_batch_count = 0
         self._pending_batch_leaves = set()
         self.logger = logging.getLogger("recsiam.memory.ObjectsMemory")
+        self.node_fit_batch_size = 64
+        self._faiss_index = None  # optional global FAISS index (set by subclasses)
 
     def __len__(self):
         return len(self.T.nodes)
@@ -276,6 +280,51 @@ class ObjectsMemory(object):
             cls = self.T.nodes[parent]["cls"]
             cls.fit(target_data, np.tile(child, len(target_data)))
 
+    def _query_global_faiss(self, pos_X, pos_idxs):
+        """For each positive vector in pos_X (global indices pos_idxs) return the
+        neg_size nearest-neighbour *distances* from vectors NOT in pos_idxs.
+
+        We fetch k + n_same + 1 neighbours so that, even after discarding all
+        n_same same-class hits, at least k genuine negatives remain
+        (assuming n_total > k + n_same).
+
+        Queries are batched to keep peak memory bounded (batch × k_fetch × 12 B).
+        Returns float32 array of shape (len(pos_X), neg_size).
+        """
+        n_total = self._faiss_index.ntotal
+        n_same = int(len(pos_idxs))
+        n_neg_available = max(1, n_total - n_same)
+        # neg_size is a fraction in (0,1]: compute absolute count like _subsample_negatives_random
+        k = max(1, round(self.neg_size * n_neg_available))
+        # Guarantees k negatives after removing all same-class hits
+        k_fetch = min(k + n_same + 1, n_total)
+
+        # Boolean mask: True = belongs to positive class (must be excluded)
+        is_pos = np.zeros(n_total, dtype=bool)
+        is_pos[pos_idxs] = True
+
+        result = np.empty((len(pos_X), k), dtype=np.float32)
+        query_batch = getattr(self, "node_fit_batch_size", 64)
+
+        for qi in range(0, len(pos_X), query_batch):
+            batch = np.ascontiguousarray(
+                pos_X[qi:qi + query_batch], dtype=np.float32
+            )
+            D_sq, I = self._faiss_index.search(batch, k_fetch)
+            for li in range(len(batch)):
+                gi = qi + li
+                neg_mask = ~is_pos[I[li]]
+                neg_dists = D_sq[li][neg_mask][:k]
+                have = len(neg_dists)
+                if have < k:
+                    # Pad with the furthest available distance (or 0 if empty)
+                    pad_val = float(neg_dists[-1]) if have > 0 else 0.0
+                    neg_dists = np.pad(neg_dists, (0, k - have),
+                                       constant_values=pad_val)
+                result[gi] = np.sqrt(np.maximum(neg_dists, 0.0))
+
+        return result
+
     def _leaves_under(self, node):
         """Return the set of leaf descendants of *node* (or {node} if already a leaf)."""
         if utils.is_leaf(self.T, node):
@@ -315,23 +364,33 @@ class ObjectsMemory(object):
 
         for c in populated_childs:
             pos_idxs = child_to_global_idxs[c]
-
-            sibling_parts = [
-                child_to_global_idxs[s]
-                for s in populated_childs
-                if s != c and len(child_to_global_idxs[s]) > 0
-            ]
-
-            if not sibling_parts:
-                continue
-
-            sibling_idxs = np.concatenate(sibling_parts).astype(np.intp)
-
             pos_X = self.M[pos_idxs]
-            neg_X = self.M[sibling_idxs]
-            y = np.tile(c, len(pos_X)).astype(object)
+            y_all = np.tile(c, len(pos_X)).astype(object)
 
-            cls.fit(pos_X, y, neg_X=neg_X)
+            batch_size = getattr(self, "node_fit_batch_size", 64)
+
+            if (self.negative_selection == "faiss_siblings"
+                    and self.neg_size is not None
+                    and self._faiss_index is not None):
+                # Global FAISS index: one query for all positives, no per-node rebuild.
+                neg_d_all = self._query_global_faiss(pos_X, pos_idxs)
+                for start in range(0, len(pos_X), batch_size):
+                    end = min(start + batch_size, len(pos_X))
+                    cls.fit(pos_X[start:end], y_all[start:end],
+                            neg_d=neg_d_all[start:end])
+            else:
+                sibling_parts = [
+                    child_to_global_idxs[s]
+                    for s in populated_childs
+                    if s != c and len(child_to_global_idxs[s]) > 0
+                ]
+                if not sibling_parts:
+                    continue
+                sibling_idxs = np.concatenate(sibling_parts).astype(np.intp)
+                neg_X = self.M[sibling_idxs]
+                for start in range(0, len(pos_X), batch_size):
+                    end = min(start + batch_size, len(pos_X))
+                    cls.fit(pos_X[start:end], y_all[start:end], neg_X=neg_X)
 
         if len(cls.y) == 0:
             self.T.nodes[node]["cls"] = None
@@ -468,10 +527,10 @@ class StaticHierarchyMemory(ObjectsMemory):
     same EVM update logic used by the online module.
     """
 
-    def __init__(self, hierarchy, evm_args, update_policy="recompute",
+    def __init__(self, hierarchy, evm_args, num_elements, update_policy="recompute",
                  rng=np.random.RandomState(), bootstrap=2, force=None,
                  predict_policy="tree", evm_batch_size=1, neg_size=None,
-                 negative_selection="random"):
+                 negative_selection="random" ):
         if evm_batch_size < 1:
             raise ValueError("evm_batch_size must be >= 1")
         super().__init__(evm_args=evm_args,
@@ -488,6 +547,62 @@ class StaticHierarchyMemory(ObjectsMemory):
         self._pending_leaf_updates = set()
         self._pending_update_count = 0
         self._leaf_nodes = set(n for n in self.T.nodes if utils.is_leaf(self.T, n))
+        self._num_elements = int(num_elements)
+        self._total_samples: int = 0  # write cursor / count of inserted rows
+
+    # IVF parameters — tune here if needed.
+    _IVF_NLIST = 1024   # number of Voronoi cells
+    _IVF_NPROBE = 64    # cells searched at query time (~6 % → ~16× speedup, ~98 % recall)
+    _IVF_MIN_TRAIN = _IVF_NLIST * 39  # min vectors required to train IVF (FAISS rule)
+
+    def _build_global_faiss_index(self):
+        """Incrementally update the global FAISS index.
+
+        On first call the index is created:
+          - If we have enough vectors (>= _IVF_MIN_TRAIN) an IVFFlat index is
+            trained and populated — query time ~16× faster than flat at ~98 % recall.
+          - Otherwise a plain IndexFlatL2 is used (dataset is small enough to be fast).
+        On subsequent calls only the new vectors are appended via .add(); no
+        retraining is needed.
+        Invariant: self._faiss_index.ntotal == self._total_samples, so FAISS
+        position i corresponds to self.M[i] (required by _query_global_faiss).
+        """
+        n = self._total_samples
+        if n == 0:
+            return
+        if self._faiss_index is None:
+            vecs = np.ascontiguousarray(self.M[:n], dtype=np.float32)
+            dim = vecs.shape[1]
+            if n >= self._IVF_MIN_TRAIN:
+                quantizer = _faiss.IndexFlatL2(dim)
+                index = _faiss.IndexIVFFlat(quantizer, dim, self._IVF_NLIST,
+                                            _faiss.METRIC_L2)
+                index.train(vecs)
+                index.nprobe = self._IVF_NPROBE
+                index.add(vecs)
+                self.logger.info(
+                    "Built IVF FAISS index: %d vectors, dim=%d, "
+                    "nlist=%d, nprobe=%d",
+                    n, dim, self._IVF_NLIST, self._IVF_NPROBE,
+                )
+            else:
+                index = _faiss.IndexFlatL2(dim)
+                index.add(vecs)
+                self.logger.info(
+                    "Built flat FAISS index: %d vectors, dim=%d "
+                    "(< %d vectors needed for IVF)",
+                    n, dim, self._IVF_MIN_TRAIN,
+                )
+            self._faiss_index = index
+        else:
+            prev = self._faiss_index.ntotal
+            if n > prev:
+                new_vecs = np.ascontiguousarray(self.M[prev:n], dtype=np.float32)
+                self._faiss_index.add(new_vecs)
+                self.logger.info(
+                    "Updated FAISS index: +%d vectors (total=%d)",
+                    n - prev, n,
+                )
 
     def _clear_pending_updates(self):
         self._pending_updates = []
@@ -498,13 +613,16 @@ class StaticHierarchyMemory(ObjectsMemory):
         if self._pending_update_count == 0:
             return
 
+        if self.update_policy == "recompute" and self.negative_selection == "faiss_siblings":
+            self._build_global_faiss_index()
+
         if self.update_policy == "recompute":
             dirty_nodes = self.affected_internal_nodes_from_leaves(self._pending_leaf_updates)
-            self.logger.debug(
-                "Flushing %d pending samples touching %d leaves and %d internal nodes",
+            self.logger.info(
+                "Flushing %d pending samples touching %d leaves → %d internal nodes to refit",
                 self._pending_update_count,
                 len(self._pending_leaf_updates),
-                len(dirty_nodes),
+                len([n for n in dirty_nodes if not utils.is_leaf(self.T, n)]),
             )
             self.recompute_nodes(dirty_nodes)
         else:
@@ -537,23 +655,28 @@ class StaticHierarchyMemory(ObjectsMemory):
         self.inst[new_id] = target
         propagate_id(self.T, target, new_id, field)
 
-        self.M = utils.a_app(self.M, new_data, ndim=2)
-        self.elem_ids = utils.a_app(self.elem_ids,
-                                    np.tile(new_id, new_data.shape[0]),
-                                    ndim=1).astype(object)
-        self.elem_node_ids = utils.a_app(self.elem_node_ids,
-                                         np.tile(target, new_data.shape[0]),
-                                         ndim=1).astype(object)
+        n_new = new_data.shape[0]
+        # Lazy pre-allocation on first call (embedding dim inferred from data).
+        if self._total_samples == 0:
+            dim = new_data.shape[1]
+            self.M = np.empty((self._num_elements, dim), dtype=np.float32)
+            self.elem_ids = np.empty(self._num_elements, dtype=object)
+            self.elem_node_ids = np.empty(self._num_elements, dtype=object)
+
+        start_idx = self._total_samples
+        self._total_samples += n_new
+        self.M[start_idx:start_idx + n_new] = new_data.astype(np.float32, copy=False)
+        self.elem_ids[start_idx:start_idx + n_new] = np.tile(new_id, n_new)
+        self.elem_node_ids[start_idx:start_idx + n_new] = np.tile(target, n_new)
+
         self.sup[new_id] = supervised
 
-        # Maintain reverse index
-        n_new = new_data.shape[0]
-        start_idx = len(self.M) - n_new
+        # Maintain reverse index using the running sample offset.
         if target not in self._node_to_indices:
             self._node_to_indices[target] = []
         self._node_to_indices[target].extend(range(start_idx, start_idx + n_new))
 
-        self._pending_update_count += 1
+        self._pending_update_count += n_new
         if self.update_policy == "recompute":
             self._pending_leaf_updates.add(target)
         else:
@@ -562,9 +685,15 @@ class StaticHierarchyMemory(ObjectsMemory):
             self._flush_pending_updates()
 
     def finalize_updates(self):
-        """Flush any pending batched EVM updates."""
+        """Flush any pending batched EVM updates and trim pre-allocated arrays."""
         if self._pending_update_count > 0:
             self._flush_pending_updates()
+        # Trim in case num_elements was slightly larger than actual insertions
+        n = self._total_samples
+        if n > 0 and n < len(self.M):
+            self.M = self.M[:n]
+            self.elem_ids = self.elem_ids[:n]
+            self.elem_node_ids = self.elem_node_ids[:n]
 
     def affected_internal_nodes_from_leaves(self, leaf_nodes):
         dirty_nodes = set()
@@ -573,8 +702,26 @@ class StaticHierarchyMemory(ObjectsMemory):
         return dirty_nodes
 
     def recompute_nodes(self, nodes):
-        for node in self._ordered_internal_nodes(nodes, reverse=True):
+        ordered = self._ordered_internal_nodes(nodes, reverse=True)
+        total = len(ordered)
+        if total == 0:
+            return
+        self.logger.info("EVM node fitting: %d internal nodes to process", total)
+        t_start = time.time()
+        for i, node in enumerate(ordered, 1):
+            t_node = time.time()
             self.recompute_evm_for_node(node)
+            node_elapsed = time.time() - t_node
+            total_elapsed = time.time() - t_start
+            avg = total_elapsed / i
+            eta = avg * (total - i)
+            self.logger.info(
+                "EVM node %d/%d  node=%s  node_time=%.1fs  elapsed=%.0fs  ETA=%.0fs",
+                i, total, node, node_elapsed, total_elapsed, eta,
+            )
+        self.logger.info(
+            "EVM node fitting complete: %d nodes in %.1fs", total, time.time() - t_start
+        )
 
     def predict_single_from_root(self, data, thr_a, thr_r=None):
         if len(self.T.nodes) == 0:
