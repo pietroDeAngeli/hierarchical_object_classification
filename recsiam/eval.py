@@ -90,6 +90,72 @@ def _hierarchy_stats(tree):
     }
 
 
+def _build_hierarchical_caches(tree):
+    """Precompute per-node caches needed for hierarchical metrics.
+
+    Parameters
+    ----------
+    tree : directed networkx DiGraph (the ground-truth taxonomy tree)
+
+    Returns
+    -------
+    dict with keys:
+        root            – root node id
+        ancestors_map   – {node: frozenset of proper ancestor node ids}
+        leaves_per_node – {node: number of leaf descendants (self counts as 1 if leaf)}
+        root_leaf_count – total number of leaves (int)
+        log_root        – log(root_leaf_count), pre-computed for coverage formula
+    Empty dict is returned when the tree is None, empty, or undirected.
+    """
+    if tree is None or not hasattr(tree, "is_directed") or not tree.is_directed():
+        return {}
+    if len(tree.nodes) == 0:
+        return {}
+
+    roots = [n for n in tree.nodes if tree.in_degree(n) == 0]
+    if not roots:
+        return {}
+    root = roots[0]
+
+    # Ancestors: all proper ancestors = nodes on the root→node path, excluding self.
+    ancestors_map: dict = {}
+    for node in tree.nodes:
+        try:
+            path = nx.shortest_path(tree, root, node)
+            ancestors_map[node] = frozenset(path[:-1])
+        except nx.NetworkXNoPath:
+            ancestors_map[node] = frozenset()
+
+    # Leaf-descendant count per node (leaf = out_degree 0; leaf itself counts as 1).
+    leaves_per_node: dict = {}
+
+    def _count_leaves(n: object) -> int:
+        children = list(tree.successors(n))
+        if not children:
+            leaves_per_node[n] = 1
+            return 1
+        total = sum(_count_leaves(c) for c in children)
+        leaves_per_node[n] = total
+        return total
+
+    _count_leaves(root)
+    # Safety: fill in any node not reachable from root.
+    for n in tree.nodes:
+        if n not in leaves_per_node:
+            leaves_per_node[n] = 1
+
+    root_leaf_count = max(leaves_per_node.get(root, 1), 1)
+    log_root = float(np.log(root_leaf_count)) if root_leaf_count > 1 else 1.0
+
+    return {
+        "root": root,
+        "ancestors_map": ancestors_map,
+        "leaves_per_node": leaves_per_node,
+        "root_leaf_count": root_leaf_count,
+        "log_root": log_root,
+    }
+
+
 def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
     logger = logging.getLogger("recsiam.eval.compute_eval_metrics")
 
@@ -108,6 +174,9 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
             "precision": None,
             "f1": None,
             "mean_geodesic_distance": None,
+            "hierarchical_accuracy": None,
+            "mean_coverage": None,
+            "hAURC": None,
             "tree_height": tree_stats["height"],
             "tree_avg_depth": tree_stats["avg_depth"],
             "tree_branching_factor_min": tree_stats["branching_factor_min"],
@@ -124,7 +193,12 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
     pred_labels = np.asarray(pred_labels, dtype=object)
 
     accuracy = float(np.mean(true_labels == pred_labels))
-    labels = np.unique(np.concatenate((true_labels, pred_labels)).astype(object))
+    # Use set + sort-by-str to handle mixed types (str leaves vs int internal nodes
+    # when thr_a > 0 causes the model to stop at an internal node).
+    labels = np.array(
+        sorted(set(true_labels.tolist()) | set(pred_labels.tolist()), key=str),
+        dtype=object,
+    )
 
     precisions = []
     f1_scores = []
@@ -147,8 +221,10 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
     f1 = float(np.mean(f1_scores)) if len(f1_scores) > 0 else None
 
     mean_geo = None
-    if tree is not None and len(tree.nodes) > 0:
-        undir = tree.to_undirected()
+    # Use gt_tree for geodesic if provided; fall back to tree.
+    geo_tree = gt_tree if gt_tree is not None else tree
+    if geo_tree is not None and len(geo_tree.nodes) > 0:
+        undir = geo_tree.to_undirected()
         geo_distances = []
         missing_node_pairs = 0
         no_path_pairs = 0
@@ -181,16 +257,71 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
             logger.warning(
                 "mean_geodesic_distance is None because no valid (true,pred) pair mapped to the evaluation tree"
             )
-    elif tree is None:
-        logger.info("Geodesic diagnostics: tree is None, geodesic distance disabled for this evaluation")
+    elif geo_tree is None:
+        logger.info("Geodesic diagnostics: no tree available, geodesic distance disabled for this evaluation")
     else:
         logger.warning("Geodesic diagnostics: evaluation tree is empty, geodesic distance disabled")
+
+    # ------------------------------------------------------------------
+    # Hierarchical correctness, coverage, and hAURC
+    # Uses geo_tree (ground-truth directed taxonomy) when available.
+    # ------------------------------------------------------------------
+    hierarchical_accuracy = None
+    mean_coverage = None
+    hAURC = None
+
+    h_cache = _build_hierarchical_caches(geo_tree)
+    if h_cache:
+        ancestors_map = h_cache["ancestors_map"]
+        leaves_per_node = h_cache["leaves_per_node"]
+        log_root = h_cache["log_root"]
+
+        correct_H_list = []
+        coverage_list = []
+
+        for t_lab, p_lab in zip(true_labels, pred_labels):
+            # Hierarchical correctness: pred == true OR pred is proper ancestor of true.
+            is_h_correct = float(
+                p_lab == t_lab or p_lab in ancestors_map.get(t_lab, frozenset())
+            )
+            correct_H_list.append(is_h_correct)
+
+            # Coverage: 1 - log(|Leaves(pred)|) / log(|Leaves(root)|)
+            n_leaves = leaves_per_node.get(p_lab, 1)
+            cov = 1.0 - float(np.log(max(n_leaves, 1))) / log_root
+            coverage_list.append(cov)
+
+        if correct_H_list:
+            correct_H_arr = np.array(correct_H_list, dtype=float)
+            coverage_arr = np.array(coverage_list, dtype=float)
+
+            hierarchical_accuracy = float(np.mean(correct_H_arr))
+            mean_coverage = float(np.mean(coverage_arr))
+
+            # hAURC: sort samples by coverage descending (most specific first),
+            # compute the running (mean_coverage, hierarchical_risk) curve,
+            # then integrate with the trapezoidal rule.
+            # Lower hAURC = low risk even when predictions are highly specific.
+            order = np.argsort(coverage_arr)[::-1]
+            s_cov = coverage_arr[order]
+            s_corr = correct_H_arr[order]
+            n = len(s_cov)
+            k_idx = np.arange(1, n + 1, dtype=float)
+            cum_mean_cov = np.cumsum(s_cov) / k_idx   # running mean coverage (decreasing)
+            cum_risk = 1.0 - np.cumsum(s_corr) / k_idx  # running hierarchical risk
+
+            if n >= 2:
+                # Flip so coverage is ascending for np.trapz (∫ R_H(c) dc).
+                hAURC = float(np.trapz(cum_risk[::-1], cum_mean_cov[::-1]))
 
     return {
         "accuracy": accuracy,
         "precision": precision,
         "f1": f1,
         "mean_geodesic_distance": mean_geo,
+        "hierarchical_accuracy": hierarchical_accuracy,
+        "mean_coverage": mean_coverage,
+        "hAURC": hAURC,
         "tree_height": tree_stats["height"],
         "tree_avg_depth": tree_stats["avg_depth"],
         "tree_branching_factor_min": tree_stats["branching_factor_min"],
@@ -204,7 +335,7 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
     }
 
 
-def evaluate_test_samples(obj_mem, test_samples, embedding_loader, thr_a=0.0, thr_r=None, logger=None):
+def evaluate_test_samples(obj_mem, test_samples, embedding_loader, thr_a=0.0, thr_r=None, logger=None, gt_tree=None):
     if logger is None:
         logger = logging.getLogger("recsiam.eval")
 
@@ -232,4 +363,4 @@ def evaluate_test_samples(obj_mem, test_samples, embedding_loader, thr_a=0.0, th
         true_labels.append(target)
         pred_labels.append(sample_pred)
 
-    return compute_eval_metrics(true_labels, pred_labels, obj_mem.T)
+    return compute_eval_metrics(true_labels, pred_labels, obj_mem.T, gt_tree=gt_tree)
