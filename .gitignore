@@ -1,13 +1,18 @@
 **__pycache__
-*.pyc
 
 
 # Directories
-results*
-dataset/*
-val2017/*
-train2017/*
-outputs/*
+results
+dataset/
+val2017/
+train2017/
+outputs/
+input_static/
+inputs/
+outputs*/
+lambda_res/
+faiss_rand/
+
 
 # Files
 #*.sbatch
@@ -15,6 +20,10 @@ outputs/*
 .env
 *.zip
 descriptor.json
+*.json
+*.sbatch
+*.sh
 
 # swap files
 *.swp
+*.pyc
