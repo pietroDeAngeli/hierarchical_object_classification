@@ -126,7 +126,7 @@ def _load_embedding(path, jl_transform=None):
     return arr
 
 
-def fit_memory_from_samples(obj_mem, train_samples, log_every=100, class_batch_size=100,
+def fit_memory_from_samples(obj_mem, train_samples, log_every=100, class_batch_size=200,
                             jl_transform=None):
     total = len(train_samples)
     if total == 0:

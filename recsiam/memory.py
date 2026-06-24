@@ -11,6 +11,7 @@ from . import supervision as sup
 from . import utils
 from .utils import a_app, t_app
 from . import evm
+from .prof_utils import timed, report, dump_csv, reset
 
 
 
@@ -362,35 +363,41 @@ class ObjectsMemory(object):
 
         cls = self.new_evm()
 
-        for c in populated_childs:
-            pos_idxs = child_to_global_idxs[c]
-            pos_X = self.M[pos_idxs]
-            y_all = np.tile(c, len(pos_X)).astype(object)
+        total_points = sum(len(child_to_global_idxs[c]) for c in populated_childs)
+        with timed("recompute_evm_for_node",
+                   node=str(node),
+                   n_childs=len(populated_childs),
+                   n_total=total_points):
+            for c in populated_childs:
+                pos_idxs = child_to_global_idxs[c]
+                pos_X = self.M[pos_idxs]
+                y_all = np.tile(c, len(pos_X)).astype(object)
 
-            batch_size = getattr(self, "node_fit_batch_size", 64)
+                base_batch = getattr(self, "node_fit_batch_size", 64)
+                target_batches_per_child = getattr(self, "node_fit_target_batches", 8)
+                batch_size = max(base_batch, (len(pos_X) + target_batches_per_child - 1) // target_batches_per_child)
 
-            if (self.negative_selection == "faiss_siblings"
-                    and self.neg_size is not None
-                    and self._faiss_index is not None):
-                # Global FAISS index: one query for all positives, no per-node rebuild.
-                neg_d_all = self._query_global_faiss(pos_X, pos_idxs)
-                for start in range(0, len(pos_X), batch_size):
-                    end = min(start + batch_size, len(pos_X))
-                    cls.fit(pos_X[start:end], y_all[start:end],
-                            neg_d=neg_d_all[start:end])
-            else:
-                sibling_parts = [
-                    child_to_global_idxs[s]
-                    for s in populated_childs
-                    if s != c and len(child_to_global_idxs[s]) > 0
-                ]
-                if not sibling_parts:
-                    continue
-                sibling_idxs = np.concatenate(sibling_parts).astype(np.intp)
-                neg_X = self.M[sibling_idxs]
-                for start in range(0, len(pos_X), batch_size):
-                    end = min(start + batch_size, len(pos_X))
-                    cls.fit(pos_X[start:end], y_all[start:end], neg_X=neg_X)
+                if (self.negative_selection == "faiss_siblings"
+                        and self.neg_size is not None
+                        and self._faiss_index is not None):
+                    neg_d_all = self._query_global_faiss(pos_X, pos_idxs)
+                    for start in range(0, len(pos_X), batch_size):
+                        end = min(start + batch_size, len(pos_X))
+                        cls.fit(pos_X[start:end], y_all[start:end],
+                                neg_d=neg_d_all[start:end])
+                else:
+                    sibling_parts = [
+                        child_to_global_idxs[s]
+                        for s in populated_childs
+                        if s != c and len(child_to_global_idxs[s]) > 0
+                    ]
+                    if not sibling_parts:
+                        continue
+                    sibling_idxs = np.concatenate(sibling_parts).astype(np.intp)
+                    neg_X = self.M[sibling_idxs]
+                    for start in range(0, len(pos_X), batch_size):
+                        end = min(start + batch_size, len(pos_X))
+                        cls.fit(pos_X[start:end], y_all[start:end], neg_X=neg_X)
 
         if len(cls.y) == 0:
             self.T.nodes[node]["cls"] = None
@@ -402,6 +409,8 @@ class ObjectsMemory(object):
         for node in self.T.nodes:
             if not utils.is_leaf(self.T, node):
                 self.recompute_evm_for_node(node)
+        report()
+        dump_csv("/tmp/evm_fit_profiling.csv")
 
     def minimal_recompute_all_update_evm(self, target_id):
         node_id = self.inst[target_id]
@@ -451,7 +460,16 @@ class ObjectsMemory(object):
             unsq = True
             data = data[None, :]
 
-        res = np.array([self.predict_single(d, *args, **kwargs) for d in data], dtype=object)
+        reset()
+
+        if self.predict_policy == "tree" and self.force != "top" and len(data) > 1:
+            nodes, indices, probs = self._predict_batch_from_root(data, *args, **kwargs)
+            res = np.empty((len(data), 3), dtype=object)
+            res[:, 0] = nodes
+            res[:, 1] = indices
+            res[:, 2] = probs
+        else:
+            res = np.array([self.predict_single(d, *args, **kwargs) for d in data], dtype=object)
 
         if not unsq:
             res = res.T
@@ -461,6 +479,64 @@ class ObjectsMemory(object):
         prob = res[2]
 
         return res[0], res[1], prob
+
+    def _predict_batch_from_root(self, data, thr_a, thr_r=None):
+        """Batched equivalent of calling predict_single_from_root(d, ...)
+        for every row d in data, one at a time.
+
+        Instead of walking the tree row-by-row (which re-pays the cost of
+        EVM.predict's distance computation for every single sample even
+        though it already supports batched queries), this groups samples
+        by their current tree node at each level and queries that node's
+        EVM once for the whole group. Stopping/advancing logic per sample
+        is identical to predict_single_from_root: a sample advances when
+        probabilities[i] >= thr_r, and stops when probabilities[i] < thr_a
+        (unless force == "bot"). Results are identical to calling the
+        unbatched version row-by-row; only how we get there changes.
+        """
+        n = len(data)
+        if thr_r is None:
+            thr_r = thr_a
+
+        root = utils.get_root(self.T)
+        current = np.full(n, root, dtype=object)
+        index = np.zeros(n, dtype=object)
+        prob = np.empty(n, dtype=object)
+        prob[:] = [np.ones(1) for _ in range(n)]
+
+        active = np.array([not utils.is_leaf(self.T, root)] * n, dtype=bool)
+
+        while active.any():
+            active_idx = np.where(active)[0]
+            # Group active samples by their current node so each node's
+            # EVM is queried exactly once per level, on all samples that
+            # are at that node right now.
+            nodes_at_level = current[active_idx]
+            for node in np.unique(nodes_at_level):
+                mask_in_group = nodes_at_level == node
+                rows = active_idx[mask_in_group]
+
+                pred_labels, i_arr, probabilities = self.T.nodes[node]["cls"].predict(
+                    data[rows], True
+                )
+                # probabilities: shape (len(rows), n_children); i_arr: shape (len(rows),)
+                chosen_prob = probabilities[np.arange(len(rows)), i_arr]
+
+                advance_mask = (chosen_prob >= thr_r) | (self.force == "bot")
+                stop_mask = (chosen_prob < thr_a) & (self.force != "bot")
+
+                for j, row in enumerate(rows):
+                    if advance_mask[j]:
+                        current[row] = pred_labels[j]
+                        prob[row] = probabilities[j]
+                        index[row] = i_arr[j]
+                    if stop_mask[j] or utils.is_leaf(self.T, current[row]):
+                        active[row] = False
+
+        for row in range(n):
+            assert index[row] in range(len(prob[row]))
+
+        return current, index, prob
 
     def predict_single(self, *args, **kwargs):
         if self.predict_policy == "tree":
@@ -530,7 +606,7 @@ class StaticHierarchyMemory(ObjectsMemory):
     def __init__(self, hierarchy, evm_args, num_elements, update_policy="recompute",
                  rng=np.random.RandomState(), bootstrap=2, force=None,
                  predict_policy="tree", evm_batch_size=1, neg_size=None,
-                 negative_selection="random" ):
+                 negative_selection="random", max_positives_per_node=20000 ):
         if evm_batch_size < 1:
             raise ValueError("evm_batch_size must be >= 1")
         super().__init__(evm_args=evm_args,
@@ -543,6 +619,9 @@ class StaticHierarchyMemory(ObjectsMemory):
                          negative_selection=negative_selection)
         self.T = _build_fixed_tree(hierarchy)
         self.evm_batch_size = int(evm_batch_size)
+        # Cap on positives per node before stratified subsampling kicks in
+        # (static scenario only). None disables subsampling entirely.
+        self.max_positives_per_node = max_positives_per_node
         self._pending_updates = []
         self._pending_leaf_updates = set()
         self._pending_update_count = 0
@@ -550,7 +629,161 @@ class StaticHierarchyMemory(ObjectsMemory):
         self._num_elements = int(num_elements)
         self._total_samples: int = 0  # write cursor / count of inserted rows
 
-    # IVF parameters — tune here if needed.
+    def recompute_evm_for_node(self, node):
+        """Static-memory override of the base recompute.
+
+        Identical to ObjectsMemory.recompute_evm_for_node, except for an
+        added stratified positive-subsampling step (see below) used to
+        isolate its effect on accuracy. No d_old reuse, no negative cap,
+        no negative-subsample-outside-loop change: those are intentionally
+        NOT included here so this override tests positive sampling alone.
+        """
+        if not getattr(self, "_logged_selection_mode", False):
+            self.logger.info(
+                "negative_selection=%r  neg_size=%r",
+                self.negative_selection,
+                self.neg_size,
+            )
+            self._logged_selection_mode = True
+
+        childs = list(self.T.succ[node])
+
+        child_to_global_idxs = {}
+        for c in childs:
+            idxs = []
+            for leaf_id in self._leaves_under(c):
+                idxs.extend(self._node_to_indices.get(leaf_id, []))
+            child_to_global_idxs[c] = np.array(idxs, dtype=np.intp)
+
+        populated_childs = [c for c, idxs in child_to_global_idxs.items() if len(idxs) > 0]
+
+        if len(populated_childs) < 2:
+            self.T.nodes[node]["cls"] = None
+            self.logger.debug(
+                "Skipping EVM fit for node %s: populated_childs=%d",
+                node,
+                len(populated_childs),
+            )
+            return
+
+        # --- Positive subsampling (static-memory only) ---------------------
+        # On nodes high in the tree, child_to_global_idxs aggregates the
+        # positives of every descendant, so n_pos can reach hundreds of
+        # thousands. The set-cover/reduce step builds a dense n_pos x n_pos
+        # distance matrix, whose size (n_pos^2 * 8 bytes) is what drives the
+        # process OOM regardless of how the matrix is computed. When the
+        # total exceeds max_positives_per_node we subsample the positives,
+        # stratified per child: each child keeps a share proportional to its
+        # size, but never fewer than a small floor, so small children are
+        # not wiped out. The set-cover then still selects the boundary
+        # extreme vectors from within the retained subset.
+        #
+        # NOTE: this is a deliberate approximation of the baseline, active
+        # only above the threshold and only in the static scenario.
+        max_positives = getattr(self, "max_positives_per_node", 20000)
+        total_points = sum(len(child_to_global_idxs[c]) for c in populated_childs)
+
+        if max_positives is not None and total_points > max_positives:
+            tailsize = int(self.evm_args.get("tailsize", 25))
+            # Floor so each child keeps enough points for a meaningful
+            # Weibull tail (but never more than it actually has).
+            per_child_floor = max(2, tailsize)
+
+            # First pass: give every child its floor (capped at its size).
+            alloc = {}
+            for c in populated_childs:
+                n_c = len(child_to_global_idxs[c])
+                alloc[c] = min(n_c, per_child_floor)
+
+            floored = sum(alloc.values())
+            remaining_budget = max_positives - floored
+
+            if remaining_budget <= 0:
+                # Even the floors exceed the budget (a node with very many
+                # children). Fall back to an even split, still >=1 per child.
+                even = max(1, max_positives // len(populated_childs))
+                for c in populated_childs:
+                    alloc[c] = min(len(child_to_global_idxs[c]), even)
+            else:
+                # Distribute the remaining budget proportionally to the
+                # leftover size of each child (size minus its floor).
+                leftovers = {
+                    c: len(child_to_global_idxs[c]) - alloc[c]
+                    for c in populated_childs
+                }
+                total_leftover = sum(leftovers.values())
+                if total_leftover > 0:
+                    for c in populated_childs:
+                        extra = int(round(
+                            remaining_budget * leftovers[c] / total_leftover
+                        ))
+                        extra = min(extra, leftovers[c])
+                        alloc[c] += extra
+
+            # Draw the per-child samples (sorted for deterministic,
+            # memory-friendly indexing into self.M).
+            new_child_to_global_idxs = {}
+            for c in populated_childs:
+                idxs = child_to_global_idxs[c]
+                k = min(alloc[c], len(idxs))
+                if k >= len(idxs):
+                    new_child_to_global_idxs[c] = idxs
+                else:
+                    chosen = self.rng.choice(len(idxs), size=k, replace=False)
+                    new_child_to_global_idxs[c] = idxs[np.sort(chosen)]
+            child_to_global_idxs = new_child_to_global_idxs
+
+            new_total = sum(len(child_to_global_idxs[c]) for c in populated_childs)
+            self.logger.info(
+                "Node %s: positives subsampled %d -> %d "
+                "(max_positives_per_node=%d, stratified per child)",
+                node, total_points, new_total, max_positives,
+            )
+
+        cls = self.new_evm()
+
+        total_points = sum(len(child_to_global_idxs[c]) for c in populated_childs)
+        with timed("recompute_evm_for_node",
+                   node=str(node),
+                   n_childs=len(populated_childs),
+                   n_total=total_points):
+            for c in populated_childs:
+                pos_idxs = child_to_global_idxs[c]
+                pos_X = self.M[pos_idxs]
+                y_all = np.tile(c, len(pos_X)).astype(object)
+
+                base_batch = getattr(self, "node_fit_batch_size", 64)
+                target_batches_per_child = getattr(self, "node_fit_target_batches", 8)
+                batch_size = max(base_batch, (len(pos_X) + target_batches_per_child - 1) // target_batches_per_child)
+
+                if (self.negative_selection == "faiss_siblings"
+                        and self.neg_size is not None
+                        and self._faiss_index is not None):
+                    neg_d_all = self._query_global_faiss(pos_X, pos_idxs)
+                    for start in range(0, len(pos_X), batch_size):
+                        end = min(start + batch_size, len(pos_X))
+                        cls.fit(pos_X[start:end], y_all[start:end],
+                                neg_d=neg_d_all[start:end])
+                else:
+                    sibling_parts = [
+                        child_to_global_idxs[s]
+                        for s in populated_childs
+                        if s != c and len(child_to_global_idxs[s]) > 0
+                    ]
+                    if not sibling_parts:
+                        continue
+                    sibling_idxs = np.concatenate(sibling_parts).astype(np.intp)
+                    neg_X = self.M[sibling_idxs]
+                    for start in range(0, len(pos_X), batch_size):
+                        end = min(start + batch_size, len(pos_X))
+                        cls.fit(pos_X[start:end], y_all[start:end], neg_X=neg_X)
+
+        if len(cls.y) == 0:
+            self.T.nodes[node]["cls"] = None
+            return
+
+        self.T.nodes[node]["cls"] = cls
+
     _IVF_NLIST = 1024   # number of Voronoi cells
     _IVF_NPROBE = 64    # cells searched at query time (~6 % → ~16× speedup, ~98 % recall)
     _IVF_MIN_TRAIN = _IVF_NLIST * 39  # min vectors required to train IVF (FAISS rule)

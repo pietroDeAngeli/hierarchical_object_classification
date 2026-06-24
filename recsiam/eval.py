@@ -335,32 +335,96 @@ def compute_eval_metrics(true_labels, pred_labels, tree=None, gt_tree=None):
     }
 
 
-def evaluate_test_samples(obj_mem, test_samples, embedding_loader, thr_a=0.0, thr_r=None, logger=None, gt_tree=None):
+def evaluate_test_samples(obj_mem, test_samples, embedding_loader, thr_a=0.0, thr_r=None,
+                          logger=None, gt_tree=None, batch_size=200):
+    """
+    Same behavior and return value as before, but loads embeddings and
+    calls obj_mem.predict() in batches instead of once per sample. This
+    avoids paying per-call overhead (including any CUDA sync inside
+    predict) and serial disk I/O for every single test sample, which is
+    what made evaluation slow on large test sets. Each sample can still
+    consist of multiple embedding rows (a single file may contain more
+    than one vector); majority_vote is still applied per-sample, not
+    across the whole batch, so results are identical to the unbatched
+    version -- this only changes how we get there.
+    """
     if logger is None:
         logger = logging.getLogger("recsiam.eval")
 
     true_labels = []
     pred_labels = []
 
-    for sample in test_samples:
-        target = sample["target"]
-        emb = embedding_loader(sample["path"])
+    n = len(test_samples)
+    for start in range(0, n, batch_size):
+        chunk = test_samples[start:start + batch_size]
+
+        # Load this chunk's embeddings, remembering how many rows each
+        # sample contributed so we can re-split predictions per-sample.
+        chunk_embs = []
+        row_counts = []
+        chunk_targets = []
+        chunk_paths = []
+        for sample in chunk:
+            try:
+                emb = embedding_loader(sample["path"])
+            except Exception as exc:
+                logger.warning("Skipping test sample '%s' due to load error: %s",
+                               sample["path"], exc)
+                continue
+            chunk_embs.append(emb)
+            row_counts.append(len(emb))
+            chunk_targets.append(sample["target"])
+            chunk_paths.append(sample["path"])
+
+        if not chunk_embs:
+            continue
+
+        batch_emb = np.concatenate(chunk_embs, axis=0)
 
         try:
-            pred, _, _ = obj_mem.predict(emb, thr_a=thr_a, thr_r=thr_r)
+            pred, _, _ = obj_mem.predict(batch_emb, thr_a=thr_a, thr_r=thr_r)
         except Exception as exc:
-            logger.warning("Skipping test sample '%s' due to prediction error: %s", sample["path"], exc)
+            # Fall back to per-sample calls only for this chunk, so a
+            # single bad chunk doesn't lose every sample in it -- mirrors
+            # the original per-sample try/except behavior.
+            logger.warning(
+                "Batched prediction failed for chunk starting at %d (%s); "
+                "falling back to per-sample prediction for this chunk.",
+                start, exc,
+            )
+            for target, path, emb in zip(chunk_targets, chunk_paths, chunk_embs):
+                try:
+                    sample_pred_arr, _, _ = obj_mem.predict(emb, thr_a=thr_a, thr_r=thr_r)
+                except Exception as exc2:
+                    logger.warning("Skipping test sample '%s' due to prediction error: %s",
+                                   path, exc2)
+                    continue
+                sample_pred_arr = np.asarray(sample_pred_arr, dtype=object)
+                if sample_pred_arr.ndim == 0:
+                    sample_pred_arr = sample_pred_arr[None]
+                sample_pred = majority_vote(sample_pred_arr)
+                if sample_pred is None:
+                    continue
+                true_labels.append(target)
+                pred_labels.append(sample_pred)
             continue
 
         pred = np.asarray(pred, dtype=object)
         if pred.ndim == 0:
             pred = pred[None]
 
-        sample_pred = majority_vote(pred)
-        if sample_pred is None:
-            continue
-
-        true_labels.append(target)
-        pred_labels.append(sample_pred)
+        # Re-split the batch predictions back into per-sample groups
+        # (in the same order rows were concatenated) and majority-vote
+        # each group independently, exactly as the unbatched version did
+        # per sample.
+        offset = 0
+        for target, n_rows in zip(chunk_targets, row_counts):
+            sample_pred_rows = pred[offset:offset + n_rows]
+            offset += n_rows
+            sample_pred = majority_vote(sample_pred_rows)
+            if sample_pred is None:
+                continue
+            true_labels.append(target)
+            pred_labels.append(sample_pred)
 
     return compute_eval_metrics(true_labels, pred_labels, obj_mem.T, gt_tree=gt_tree)
