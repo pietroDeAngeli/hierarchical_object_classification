@@ -285,18 +285,32 @@ class ObjectsMemory(object):
         """For each positive vector in pos_X (global indices pos_idxs) return the
         neg_size nearest-neighbour *distances* from vectors NOT in pos_idxs.
 
+        k is capped at max_neg_multiplier * tailsize, mirroring the cap
+        applied on the random path (EVM._max_neg_cap). Without this, k
+        scales with neg_size * n_neg_available and can reach tens of
+        thousands on large nodes, even though _weibull_fit only ever
+        consumes the `tailsize` nearest negatives per positive -- the rest
+        would just cost extra FAISS query time and memory for no benefit.
+
         We fetch k + n_same + 1 neighbours so that, even after discarding all
         n_same same-class hits, at least k genuine negatives remain
         (assuming n_total > k + n_same).
 
         Queries are batched to keep peak memory bounded (batch × k_fetch × 12 B).
-        Returns float32 array of shape (len(pos_X), neg_size).
+        Returns float32 array of shape (len(pos_X), k).
         """
         n_total = self._faiss_index.ntotal
         n_same = int(len(pos_idxs))
         n_neg_available = max(1, n_total - n_same)
         # neg_size is a fraction in (0,1]: compute absolute count like _subsample_negatives_random
-        k = max(1, round(self.neg_size * n_neg_available))
+        k_frac = max(1, round(self.neg_size * n_neg_available))
+        tailsize = int(self.evm_args.get("tailsize", 25))
+        max_neg_multiplier = self.evm_args.get("max_neg_multiplier", None)
+        if max_neg_multiplier is not None:
+            k_cap = max(1, int(max_neg_multiplier) * tailsize)
+            k = min(k_frac, k_cap)
+        else:
+            k = k_frac
         # Guarantees k negatives after removing all same-class hits
         k_fetch = min(k + n_same + 1, n_total)
 
@@ -784,17 +798,32 @@ class StaticHierarchyMemory(ObjectsMemory):
 
         self.T.nodes[node]["cls"] = cls
 
-    _IVF_NLIST = 1024   # number of Voronoi cells
     _IVF_NPROBE = 64    # cells searched at query time (~6 % → ~16× speedup, ~98 % recall)
-    _IVF_MIN_TRAIN = _IVF_NLIST * 39  # min vectors required to train IVF (FAISS rule)
+    _IVF_MIN_TRAIN_FLOOR = 2000  # below this many vectors, flat search is already fast; skip IVF
+    _IVF_POINTS_PER_CENTROID = 39  # FAISS's own minimum training rule
+
+    def _ivf_nlist_for(self, n):
+        """Pick nlist adaptively so IVF activates (and trains validly) on
+        datasets of any size, instead of a single fixed nlist that only
+        makes sense for one particular dataset size. Standard FAISS rule
+        of thumb: nlist ~ sqrt(n), capped so n >= nlist * _IVF_POINTS_PER_CENTROID
+        (FAISS's own minimum-training-points requirement) is always met.
+        """
+        nlist_sqrt_rule = max(1, int(np.sqrt(n)))
+        nlist_max_valid = max(1, n // self._IVF_POINTS_PER_CENTROID)
+        return max(1, min(nlist_sqrt_rule, nlist_max_valid))
 
     def _build_global_faiss_index(self):
         """Incrementally update the global FAISS index.
 
         On first call the index is created:
-          - If we have enough vectors (>= _IVF_MIN_TRAIN) an IVFFlat index is
-            trained and populated — query time ~16× faster than flat at ~98 % recall.
-          - Otherwise a plain IndexFlatL2 is used (dataset is small enough to be fast).
+          - If we have enough vectors (>= _IVF_MIN_TRAIN_FLOOR) an IVFFlat
+            index is trained and populated, with nlist chosen adaptively
+            for the dataset size (see _ivf_nlist_for) — query time
+            substantially faster than flat at ~98 % recall.
+          - Otherwise a plain IndexFlatL2 is used (dataset is small enough
+            that flat search is already fast, and/or too small for IVF
+            training to be statistically meaningful).
         On subsequent calls only the new vectors are appended via .add(); no
         retraining is needed.
         Invariant: self._faiss_index.ntotal == self._total_samples, so FAISS
@@ -806,17 +835,18 @@ class StaticHierarchyMemory(ObjectsMemory):
         if self._faiss_index is None:
             vecs = np.ascontiguousarray(self.M[:n], dtype=np.float32)
             dim = vecs.shape[1]
-            if n >= self._IVF_MIN_TRAIN:
+            if n >= self._IVF_MIN_TRAIN_FLOOR:
+                nlist = self._ivf_nlist_for(n)
                 quantizer = _faiss.IndexFlatL2(dim)
-                index = _faiss.IndexIVFFlat(quantizer, dim, self._IVF_NLIST,
+                index = _faiss.IndexIVFFlat(quantizer, dim, nlist,
                                             _faiss.METRIC_L2)
                 index.train(vecs)
-                index.nprobe = self._IVF_NPROBE
+                index.nprobe = min(self._IVF_NPROBE, nlist)
                 index.add(vecs)
                 self.logger.info(
                     "Built IVF FAISS index: %d vectors, dim=%d, "
                     "nlist=%d, nprobe=%d",
-                    n, dim, self._IVF_NLIST, self._IVF_NPROBE,
+                    n, dim, nlist, index.nprobe,
                 )
             else:
                 index = _faiss.IndexFlatL2(dim)
@@ -824,7 +854,7 @@ class StaticHierarchyMemory(ObjectsMemory):
                 self.logger.info(
                     "Built flat FAISS index: %d vectors, dim=%d "
                     "(< %d vectors needed for IVF)",
-                    n, dim, self._IVF_MIN_TRAIN,
+                    n, dim, self._IVF_MIN_TRAIN_FLOOR,
                 )
             self._faiss_index = index
         else:

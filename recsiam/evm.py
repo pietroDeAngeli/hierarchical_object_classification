@@ -37,6 +37,45 @@ def euclidean_pdist(X):
         return _EMPTY
 
 
+def _l2_normalize(t, eps=1e-12):
+    return t / t.norm(dim=-1, keepdim=True).clamp_min(eps)
+
+
+def cosine_cdist(X, Y):
+    """Cosine *distance* (1 - cosine similarity), shape (len(X), len(Y)).
+    Same calling convention as euclidean_cdist, so it's a drop-in swap."""
+    if len(X) > 0 and len(Y) > 0:
+        if X.ndim == 1:
+            X = X[None, :]
+        if Y.ndim == 1:
+            Y = Y[None, :]
+        xt = _l2_normalize(torch.as_tensor(X, dtype=torch.float32, device=_DEVICE))
+        yt = _l2_normalize(torch.as_tensor(Y, dtype=torch.float32, device=_DEVICE))
+        sim = xt @ yt.T
+        result = (1.0 - sim).cpu().numpy().astype(np.float64)
+        return result
+    else:
+        return np.zeros(shape=(len(X), len(Y)))
+
+
+def cosine_pdist(X):
+    """Cosine distance, pairwise within X. Same convention as euclidean_pdist."""
+    if len(X) > 0:
+        if X.ndim == 1:
+            X = X[None, :]
+        xt = _l2_normalize(torch.as_tensor(X, dtype=torch.float32, device=_DEVICE))
+        sim = xt @ xt.T
+        return (1.0 - sim).cpu().numpy().astype(np.float64)
+    else:
+        return _EMPTY
+
+
+_DISTANCE_FNS = {
+    "euclidean": (euclidean_cdist, euclidean_pdist),
+    "cosine": (cosine_cdist, cosine_pdist),
+}
+
+
 def load_data(fname):
     with open(fname) as f:
         raw_data = f.read().splitlines()
@@ -222,6 +261,7 @@ class EVM():
                  neg_size=None,
                  negative_selection="random",
                  max_neg_multiplier=10,
+                 distance_metric="euclidean",
                  rng=None):
 
         self.evt_indices = evt_indices
@@ -235,6 +275,14 @@ class EVM():
         self.negative_selection = negative_selection
         self._max_neg_multiplier = max_neg_multiplier
         self.rng = rng if rng is not None else np.random.RandomState()
+
+        if distance_metric not in _DISTANCE_FNS:
+            raise ValueError(
+                f"Unknown distance_metric '{distance_metric}', "
+                f"must be one of {sorted(_DISTANCE_FNS)}"
+            )
+        self.distance_metric = distance_metric
+        self._cdist, self._pdist = _DISTANCE_FNS[distance_metric]
 
         self.weibulls = _EMPTY
         self.y = _EMPTY
@@ -253,12 +301,21 @@ class EVM():
                 "neg_size": self.neg_size,
                 "negative_selection": self.negative_selection,
                 "max_neg_multiplier": self._max_neg_multiplier,
+                "distance_metric": self.distance_metric,
                }
 
     def set_params(self, **parameters):
         for parameter, value in parameters.items():
             if parameter == "max_neg_multiplier":
                 self._max_neg_multiplier = value
+            elif parameter == "distance_metric":
+                if value not in _DISTANCE_FNS:
+                    raise ValueError(
+                        f"Unknown distance_metric '{value}', "
+                        f"must be one of {sorted(_DISTANCE_FNS)}"
+                    )
+                self.distance_metric = value
+                self._cdist, self._pdist = _DISTANCE_FNS[value]
             else:
                 setattr(self, parameter, value)
         return self
@@ -273,6 +330,7 @@ class EVM():
                   neg_size=self.neg_size,
                   negative_selection=self.negative_selection,
                   max_neg_multiplier=self._max_neg_multiplier,
+                  distance_metric=self.distance_metric,
                   rng=self.rng)
 
         new.weibulls = self.weibulls.copy()
@@ -295,11 +353,11 @@ class EVM():
 
     def build_dmat(self, new_X, neg_X):
         with timed("build_dmat", n_old=len(self.X), n_new=len(new_X), n_neg=len(neg_X)):
-            d_old = euclidean_pdist(self.X)
-            d_new = euclidean_pdist(new_X)
-            d_old_new = euclidean_cdist(self.X, new_X)
-            d_old_neg = euclidean_cdist(self.X, neg_X)
-            d_new_neg = euclidean_cdist(new_X, neg_X)
+            d_old = self._pdist(self.X)
+            d_new = self._pdist(new_X)
+            d_old_new = self._cdist(self.X, new_X)
+            d_old_neg = self._cdist(self.X, neg_X)
+            d_new_neg = self._cdist(new_X, neg_X)
 
             old_s = slice(0, len(self.X), None)
             new_s = slice(old_s.stop, old_s.stop + len(new_X), None)
@@ -340,16 +398,21 @@ class EVM():
 
     def _compute_neg_d_faiss(self, X, neg_X):
         """For each positive x_i in X find the k nearest negatives in neg_X
-        using torch.cdist (GPU-accelerated when available) and return a
-        per-row distance matrix neg_d of shape (len(X), k) containing L2
-        distances.  Each row is independent, so different positives can have
+        (GPU-accelerated when available) and return a per-row distance
+        matrix neg_d of shape (len(X), k), using self.distance_metric.
+        Each row is independent, so different positives can have
         different hard negatives.
         neg_size is a fraction in (0, 1]: 1.0 uses all negatives."""
         k = max(1, round(self.neg_size * len(neg_X)))
         neg_t = torch.as_tensor(neg_X, dtype=torch.float32, device=_DEVICE)
         q_t = torch.as_tensor(X, dtype=torch.float32, device=_DEVICE)
-        # full pairwise L2, shape (len(X), len(neg_X))
-        d_full = torch.cdist(q_t, neg_t, p=2)
+        if self.distance_metric == "cosine":
+            neg_t = _l2_normalize(neg_t)
+            q_t = _l2_normalize(q_t)
+            d_full = 1.0 - (q_t @ neg_t.T)
+        else:
+            # full pairwise L2, shape (len(X), len(neg_X))
+            d_full = torch.cdist(q_t, neg_t, p=2)
         # keep only the k smallest per row
         d_topk, _ = torch.topk(d_full, k, dim=1, largest=False, sorted=True)
         return d_topk.cpu().numpy().astype(np.float64)
@@ -449,7 +512,7 @@ class EVM():
         """
         n_query = 1 if X.ndim == 1 else len(X)
         with timed("predict_cdist", n_ev=len(self.X), n_query=n_query):
-            d_mat = euclidean_cdist(self.X, X).astype(np.float64)
+            d_mat = self._cdist(self.X, X).astype(np.float64)
         with timed("predict_weibull_eval", n_ev=len(self.X), n_query=n_query):
             probs = np.array(list(map(_weibull_eval, zip(d_mat, self.weibulls))))
 
@@ -474,6 +537,11 @@ class EVM():
             return np.array(predicted_labels.tolist())
 
     def generate(self, rng, points=None, number=None, label=None):
+        """Synthesize points around existing extreme vectors by sampling a
+        Weibull-inverted radius and a random direction in Euclidean space
+        (see spherical2cart). This sampling is inherently Euclidean — it does
+        not have a meaningful cosine-space equivalent — so it always uses
+        Euclidean distance regardless of self.distance_metric."""
 
         assert (points is None) == (number is None) == (label is None)
 
@@ -531,7 +599,7 @@ class EVM():
         return np.maximum(final_dmat, 0.)
 
     def get_distance(self, points, exclude_label=None):
-        return euclidean_cdist(points, self.X[self.y != exclude_label, ...])
+        return self._cdist(points, self.X[self.y != exclude_label, ...])
 
 
 
